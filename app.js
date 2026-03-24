@@ -15,6 +15,7 @@ let displayedFps = 0;
 let panelCollapsed = false;
 let capturedAnalysis = null;
 let blinkPhase = 0; // for PSA 10 centering blink animation
+let lastCardDetectedTime = 0; // track when card was last seen
 
 // Smoothing buffers for stable readings
 const SMOOTH_FRAMES = 8;
@@ -121,7 +122,7 @@ function startAnalysisLoop() {
 
 // ─── Main Analysis ──────────────────────────────────────────────
 function analyseFrame() {
-  let src, gray, edges, contours, hierarchy;
+  let src, gray;
   try {
     src = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
     const cap = new cv.VideoCapture(video);
@@ -131,43 +132,35 @@ function analyseFrame() {
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
     cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
 
-    // Edge detection
-    edges = new cv.Mat();
-    cv.Canny(gray, edges, 50, 150);
+    let cardContour = null;
 
-    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
-    cv.dilate(edges, edges, kernel);
-    kernel.delete();
+    // Pass 1: Canny(30, 100) + dilate 5x5 → find quads with multi-epsilon
+    cardContour = cannyDetectPass(gray, src.cols, src.rows);
 
-    contours = new cv.MatVector();
-    hierarchy = new cv.Mat();
-    cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-
-    let cardContour = findCardContour(contours, src.cols, src.rows);
-
-    // Adaptive thresholding fallback when Canny fails (e.g. poor lighting)
+    // Pass 2: Resize to 640px wide → repeat Pass 1 (multi-scale)
     if (!cardContour) {
-      let adaptiveEdges = null, adaptiveContours = null, adaptiveHierarchy = null;
-      try {
-        adaptiveEdges = new cv.Mat();
-        cv.adaptiveThreshold(gray, adaptiveEdges, 255,
-          cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 11, 2);
-        const kernel2 = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
-        cv.morphologyEx(adaptiveEdges, adaptiveEdges, cv.MORPH_CLOSE, kernel2);
-        kernel2.delete();
-        adaptiveContours = new cv.MatVector();
-        adaptiveHierarchy = new cv.Mat();
-        cv.findContours(adaptiveEdges, adaptiveContours, adaptiveHierarchy,
-          cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-        cardContour = findCardContour(adaptiveContours, src.cols, src.rows);
-      } finally {
-        if (adaptiveEdges) adaptiveEdges.delete();
-        if (adaptiveContours) adaptiveContours.delete();
-        if (adaptiveHierarchy) adaptiveHierarchy.delete();
-      }
+      cardContour = scaledDetectPass(gray, src.cols, src.rows);
+    }
+
+    // Pass 3: adaptiveThreshold (blockSize=21, C=3) → find quads
+    if (!cardContour) {
+      cardContour = adaptiveThresholdPass(gray, src.cols, src.rows);
+    }
+
+    // Pass 4: Best rectangle fallback — minAreaRect on large contours
+    if (!cardContour) {
+      cardContour = minAreaRectFallback(gray, src.cols, src.rows);
     }
 
     ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+    // Compute mean brightness for tip messages
+    const frameMean = new cv.Mat();
+    const frameStd = new cv.Mat();
+    cv.meanStdDev(gray, frameMean, frameStd);
+    const meanBrightness = frameMean.doubleAt(0, 0);
+    frameMean.delete();
+    frameStd.delete();
 
     if (cardContour) {
       const grade = gradeCard(src, cardContour);
@@ -179,12 +172,23 @@ function analyseFrame() {
         drawOverlay(cardContour, grade);
         updateUI(grade);
         lastGrade = grade;
+        lastCardDetectedTime = performance.now();
         document.getElementById('capture-btn').disabled = false;
         document.getElementById('detection-status').textContent = 'Card detected';
         document.getElementById('scan-line').classList.add('hidden');
       }
     } else {
-      document.getElementById('detection-status').textContent = 'No card detected';
+      // Smart tip messages
+      const now = performance.now();
+      let tip;
+      if (meanBrightness < 60) {
+        tip = '\u{1F4A1} Need more light';
+      } else if (now - lastCardDetectedTime < 2000 && lastCardDetectedTime > 0) {
+        tip = '\u{1F4D0} Hold steady, card was found';
+      } else {
+        tip = '\u{1F50D} Point camera at card, fill frame';
+      }
+      document.getElementById('detection-status').textContent = tip;
       document.getElementById('capture-btn').disabled = true;
       document.getElementById('scan-line').classList.remove('hidden');
       drawNoCardOverlay();
@@ -194,6 +198,129 @@ function analyseFrame() {
   } finally {
     if (src) src.delete();
     if (gray) gray.delete();
+  }
+}
+
+// ─── Detection Passes ───────────────────────────────────────────
+function cannyDetectPass(gray, imgW, imgH) {
+  let edges = null, contours = null, hierarchy = null;
+  try {
+    edges = new cv.Mat();
+    cv.Canny(gray, edges, 30, 100);
+    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
+    cv.dilate(edges, edges, kernel);
+    kernel.delete();
+    contours = new cv.MatVector();
+    hierarchy = new cv.Mat();
+    cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+    return findCardContour(contours, imgW, imgH);
+  } finally {
+    if (edges) edges.delete();
+    if (contours) contours.delete();
+    if (hierarchy) hierarchy.delete();
+  }
+}
+
+function scaledDetectPass(gray, origW, origH) {
+  let resized = null, edges = null, contours = null, hierarchy = null;
+  try {
+    const targetW = 640;
+    const scale = targetW / origW;
+    if (scale >= 1) return null; // already small enough
+    const targetH = Math.round(origH * scale);
+    resized = new cv.Mat();
+    cv.resize(gray, resized, new cv.Size(targetW, targetH));
+    edges = new cv.Mat();
+    cv.Canny(resized, edges, 30, 100);
+    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
+    cv.dilate(edges, edges, kernel);
+    kernel.delete();
+    contours = new cv.MatVector();
+    hierarchy = new cv.Mat();
+    cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+    const result = findCardContour(contours, targetW, targetH);
+    if (!result) return null;
+    // Scale contour points back to original resolution
+    const invScale = 1 / scale;
+    const scaled = new cv.Mat(4, 1, cv.CV_32SC2);
+    for (let i = 0; i < 4; i++) {
+      scaled.data32S[i * 2] = Math.round(result.data32S[i * 2] * invScale);
+      scaled.data32S[i * 2 + 1] = Math.round(result.data32S[i * 2 + 1] * invScale);
+    }
+    result.delete();
+    return scaled;
+  } finally {
+    if (resized) resized.delete();
+    if (edges) edges.delete();
+    if (contours) contours.delete();
+    if (hierarchy) hierarchy.delete();
+  }
+}
+
+function adaptiveThresholdPass(gray, imgW, imgH) {
+  let adaptiveEdges = null, contours = null, hierarchy = null;
+  try {
+    adaptiveEdges = new cv.Mat();
+    cv.adaptiveThreshold(gray, adaptiveEdges, 255,
+      cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 21, 3);
+    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
+    cv.morphologyEx(adaptiveEdges, adaptiveEdges, cv.MORPH_CLOSE, kernel);
+    kernel.delete();
+    contours = new cv.MatVector();
+    hierarchy = new cv.Mat();
+    cv.findContours(adaptiveEdges, contours, hierarchy,
+      cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+    return findCardContour(contours, imgW, imgH);
+  } finally {
+    if (adaptiveEdges) adaptiveEdges.delete();
+    if (contours) contours.delete();
+    if (hierarchy) hierarchy.delete();
+  }
+}
+
+function minAreaRectFallback(gray, imgW, imgH) {
+  let edges = null, contours = null, hierarchy = null;
+  try {
+    edges = new cv.Mat();
+    cv.Canny(gray, edges, 30, 100);
+    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
+    cv.dilate(edges, edges, kernel);
+    kernel.delete();
+    contours = new cv.MatVector();
+    hierarchy = new cv.Mat();
+    cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+    const imgArea = imgW * imgH;
+    let bestContour = null;
+    let bestArea = 0;
+
+    for (let i = 0; i < contours.size(); i++) {
+      const cnt = contours.get(i);
+      const area = cv.contourArea(cnt);
+      if (area < imgArea * 0.03 || area > imgArea * 0.95) {
+        cnt.delete();
+        continue;
+      }
+      const rotRect = cv.minAreaRect(cnt);
+      const rw = rotRect.size.width;
+      const rh = rotRect.size.height;
+      const aspect = Math.max(rw, rh) / Math.min(rw, rh);
+      if (aspect >= 1.2 && aspect <= 1.7 && area > bestArea) {
+        // Convert rotated rect to 4 corner points
+        const vertices = cv.RotatedRect.points(rotRect);
+        const pts = new cv.Mat(4, 1, cv.CV_32SC2);
+        for (let j = 0; j < 4; j++) {
+          pts.data32S[j * 2] = Math.round(vertices[j].x);
+          pts.data32S[j * 2 + 1] = Math.round(vertices[j].y);
+        }
+        if (bestContour) bestContour.delete();
+        bestContour = pts;
+        bestArea = area;
+      }
+      cnt.delete();
+    }
+    return bestContour;
+  } finally {
     if (edges) edges.delete();
     if (contours) contours.delete();
     if (hierarchy) hierarchy.delete();
@@ -205,33 +332,39 @@ function findCardContour(contours, imgW, imgH) {
   const imgArea = imgW * imgH;
   let bestContour = null;
   let bestArea = 0;
+  const epsilons = [0.02, 0.03, 0.04, 0.05];
 
   for (let i = 0; i < contours.size(); i++) {
     const cnt = contours.get(i);
     const area = cv.contourArea(cnt);
 
-    if (area < imgArea * 0.05 || area > imgArea * 0.95) {
+    if (area < imgArea * 0.03 || area > imgArea * 0.95) {
       cnt.delete();
       continue;
     }
 
     const peri = cv.arcLength(cnt, true);
-    const approx = new cv.Mat();
-    cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
 
-    if (approx.rows === 4 && cv.isContourConvex(approx)) {
-      const rect = cv.boundingRect(approx);
-      const aspect = Math.max(rect.width, rect.height) / Math.min(rect.width, rect.height);
+    // Try multiple epsilon values to find the best 4-sided approximation
+    for (const eps of epsilons) {
+      const approx = new cv.Mat();
+      cv.approxPolyDP(cnt, approx, eps * peri, true);
 
-      if (aspect >= 1.2 && aspect <= 1.7 && area > bestArea) {
-        if (bestContour) bestContour.delete();
-        bestContour = approx;
-        bestArea = area;
+      if (approx.rows === 4 && cv.isContourConvex(approx)) {
+        const rect = cv.boundingRect(approx);
+        const aspect = Math.max(rect.width, rect.height) / Math.min(rect.width, rect.height);
+
+        if (aspect >= 1.2 && aspect <= 1.7 && area > bestArea) {
+          if (bestContour) bestContour.delete();
+          bestContour = approx;
+          bestArea = area;
+          break; // found a good quad for this contour
+        } else {
+          approx.delete();
+        }
       } else {
         approx.delete();
       }
-    } else {
-      approx.delete();
     }
     cnt.delete();
   }
@@ -283,7 +416,7 @@ function getWarpedCard(src, contour) {
   // Quality check: reject distorted homographies
   const sideRatioW = Math.min(widthTop, widthBot) / Math.max(widthTop, widthBot);
   const sideRatioH = Math.min(heightLeft, heightRight) / Math.max(heightLeft, heightRight);
-  if (sideRatioW < 0.6 || sideRatioH < 0.6) {
+  if (sideRatioW < 0.4 || sideRatioH < 0.4) {
     srcPts.delete();
     dstPts.delete();
     return null;
