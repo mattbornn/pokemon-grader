@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>PSA Card Grader</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Loading Screen -->
+  <div id="loading-screen">
+    <div class="loader-content">
+      <div class="spinner"></div>
+      <h1>PSA Card Grader</h1>
+      <p id="loading-status">Loading OpenCV.js...</p>
+      <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+    </div>
+  </div>
+
+  <!-- Instructions Overlay -->
+  <div id="instructions-overlay" class="hidden">
+    <div class="instructions-content">
+      <h2>How to Grade</h2>
+      <ul>
+        <li>Hold card flat, fill the frame</li>
+        <li>Use good, even lighting</li>
+        <li>Keep card steady for best results</li>
+        <li>Tap <strong>Capture</strong> for detailed analysis</li>
+      </ul>
+      <button id="start-btn">Start Grading</button>
+    </div>
+  </div>
+
+  <!-- Main Camera View -->
+  <div id="camera-container">
+    <video id="camera" autoplay playsinline muted></video>
+    <canvas id="overlay"></canvas>
+    <div id="scan-line" class="hidden"></div>
+
+    <!-- Top Status Bar -->
+    <div id="top-bar">
+      <span id="fps-counter">-- fps</span>
+      <span id="detection-status">No card detected</span>
+      <span id="confidence-indicator"></span>
+    </div>
+
+    <!-- Grade Badge (PSA Slab Style) -->
+    <div id="grade-badge" class="hidden">
+      <div class="slab-header">
+        <span class="slab-brand">PSA</span>
+      </div>
+      <div class="slab-grade-num" id="badge-grade">--</div>
+      <div class="slab-grade-label" id="badge-label"></div>
+    </div>
+
+    <!-- PSA 10 Candidate Checklist (Live Overlay) -->
+    <div id="live-checklist" class="hidden">
+      <div class="live-checklist-title">PSA 10 Candidate</div>
+      <div class="live-check-row" id="lc-centering">
+        <span class="lc-icon">--</span>
+        <span class="lc-text">Centering ≤ 55/45</span>
+      </div>
+      <div class="live-check-row" id="lc-corners">
+        <span class="lc-icon">--</span>
+        <span class="lc-text">All corners 9+</span>
+      </div>
+      <div class="live-check-row" id="lc-edges">
+        <span class="lc-icon">--</span>
+        <span class="lc-text">All edges 9+</span>
+      </div>
+      <div class="live-check-row" id="lc-surface">
+        <span class="lc-icon">--</span>
+        <span class="lc-text">Surface 9+</span>
+      </div>
+    </div>
+
+    <!-- Scan Tips Banner -->
+    <div id="scan-tips" class="hidden">
+      <div id="scan-tips-text"></div>
+    </div>
+
+    <!-- Bottom Panel -->
+    <div id="bottom-panel">
+      <div id="panel-handle" role="button" aria-label="Toggle panel"></div>
+      <div id="sub-grades">
+        <div class="grade-row">
+          <span class="grade-icon">&#x1F3AF;</span>
+          <span class="grade-label">Centering</span>
+          <span class="grade-value" id="centering-value">--</span>
+          <div class="grade-bar"><div class="grade-bar-fill" id="centering-bar"></div></div>
+        </div>
+        <div class="centering-detail" id="centering-detail">L/R --/-- | T/B --/--</div>
+
+        <div class="grade-row">
+          <span class="grade-icon">&#x1F4D0;</span>
+          <span class="grade-label">Corners</span>
+          <span class="grade-value" id="corners-value">--</span>
+          <div class="grade-bar"><div class="grade-bar-fill" id="corners-bar"></div></div>
+        </div>
+        <div class="corners-detail" id="corners-detail">TL -- | TR -- | BL -- | BR --</div>
+
+        <div class="grade-row">
+          <span class="grade-icon">&#x1F4CF;</span>
+          <span class="grade-label">Edges</span>
+          <span class="grade-value" id="edges-value">--</span>
+          <div class="grade-bar"><div class="grade-bar-fill" id="edges-bar"></div></div>
+        </div>
+        <div class="edges-detail" id="edges-detail">T -- | B -- | L -- | R --</div>
+
+        <div class="grade-row">
+          <span class="grade-icon">&#x2728;</span>
+          <span class="grade-label">Surface</span>
+          <span class="grade-value" id="surface-value">--</span>
+          <div class="grade-bar"><div class="grade-bar-fill" id="surface-bar"></div></div>
+        </div>
+        <div class="surface-detail" id="surface-detail">No issues</div>
+      </div>
+    </div>
+
+    <!-- Floating Capture Button -->
+    <button id="capture-btn" disabled>
+      <span class="capture-ring"></span>
+      <span class="capture-inner"></span>
+    </button>
+  </div>
+
+  <!-- History View -->
+  <div id="history-view" class="hidden">
+    <div class="history-header">
+      <h2>Recent Analyses</h2>
+    </div>
+    <div id="history-list" class="history-list"></div>
+    <div id="history-empty" class="history-empty">No captures yet. Grade a card and tap Capture to save.</div>
+  </div>
+
+  <!-- History Detail Modal -->
+  <div id="history-detail-modal" class="hidden">
+    <div class="modal-header">
+      <h2>Saved Analysis</h2>
+      <button id="history-detail-close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <img id="history-detail-img" class="history-detail-img" />
+      <div id="history-detail-badge" class="detail-grade-badge-inline">
+        <div class="slab-header"><span class="slab-brand">PSA</span></div>
+        <div class="slab-grade-num" id="history-detail-grade">--</div>
+        <div class="slab-grade-label" id="history-detail-label"></div>
+      </div>
+      <div id="history-detail-breakdown"></div>
+    </div>
+  </div>
+
+  <!-- Detail Modal -->
+  <div id="detail-modal" class="hidden">
+    <div class="modal-header">
+      <h2>Detailed Analysis</h2>
+      <button id="modal-close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <canvas id="detail-canvas"></canvas>
+      <div id="detail-grade-badge" class="detail-grade-badge-inline">
+        <div class="slab-header"><span class="slab-brand">PSA</span></div>
+        <div class="slab-grade-num" id="detail-badge-grade">--</div>
+        <div class="slab-grade-label" id="detail-badge-label"></div>
+      </div>
+      <div id="detail-breakdown"></div>
+      <div id="psa10-checklist">
+        <h3>PSA 10 Checklist</h3>
+        <ul id="checklist-items"></ul>
+      </div>
+      <button id="save-btn">Save Analysis as PNG</button>
+    </div>
+  </div>
+
+  <!-- Bottom Navigation Bar -->
+  <nav id="bottom-nav">
+    <button class="nav-tab active" id="nav-live" data-view="live">
+      <span class="nav-icon">&#x1F4F7;</span>
+      <span class="nav-label">Live</span>
+    </button>
+    <button class="nav-tab" id="nav-history" data-view="history">
+      <span class="nav-icon">&#x1F4CA;</span>
+      <span class="nav-label">History</span>
+    </button>
+  </nav>
+
+  <script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="onOpenCvReady()" id="opencv-script"></script>
+  <script src="app.js"></script>
+</body>
+</html>
