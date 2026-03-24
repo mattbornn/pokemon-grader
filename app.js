@@ -16,6 +16,86 @@ let panelCollapsed = false;
 let capturedAnalysis = null;
 let blinkPhase = 0; // for PSA 10 centering blink animation
 let lastCardDetectedTime = 0; // track when card was last seen
+let GUIDE_MODE = true; // true = guide frame (default), false = auto-detect
+
+// ─── Guide Frame Helpers ────────────────────────────────────────
+function getGuideRect(videoW, videoH) {
+  const cardAspect = 2.5 / 3.5; // width/height
+  const h = videoH * 0.80;
+  const w = h * cardAspect;
+  const x = (videoW - w) / 2;
+  const y = (videoH - h) / 2;
+  return { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) };
+}
+
+function guideRectToContour(guide) {
+  const contour = new cv.Mat(4, 1, cv.CV_32SC2);
+  contour.data32S[0] = guide.x;              contour.data32S[1] = guide.y;               // TL
+  contour.data32S[2] = guide.x + guide.w;    contour.data32S[3] = guide.y;               // TR
+  contour.data32S[4] = guide.x + guide.w;    contour.data32S[5] = guide.y + guide.h;     // BR
+  contour.data32S[6] = guide.x;              contour.data32S[7] = guide.y + guide.h;     // BL
+  return contour;
+}
+
+function guideRegionHasCard(src, guide) {
+  let roi = null, lap = null;
+  try {
+    const rect = new cv.Rect(guide.x, guide.y, guide.w, guide.h);
+    roi = src.roi(rect);
+    lap = new cv.Mat();
+    cv.Laplacian(roi, lap, cv.CV_64F);
+    const mean = new cv.Mat();
+    const stddev = new cv.Mat();
+    cv.meanStdDev(lap, mean, stddev);
+    const variance = stddev.doubleAt(0, 0) ** 2;
+    mean.delete();
+    stddev.delete();
+    return variance > 50;
+  } finally {
+    if (roi) roi.delete();
+    if (lap) lap.delete();
+  }
+}
+
+function gradeCardFromCrop(src, guide) {
+  let cropped = null, resized = null, grayWarped = null;
+  try {
+    const rect = new cv.Rect(guide.x, guide.y, guide.w, guide.h);
+    cropped = src.roi(rect);
+    resized = new cv.Mat();
+    const w = 350;
+    const h = Math.round(w * 1.4); // 490
+    cv.resize(cropped, resized, new cv.Size(w, h));
+
+    grayWarped = new cv.Mat();
+    cv.cvtColor(resized, grayWarped, cv.COLOR_RGBA2GRAY);
+
+    const centering = analyseCentering(grayWarped, w, h);
+    const corners = analyseCorners(grayWarped, w, h);
+    const edgesGrade = analyseEdges(grayWarped, w, h);
+    const surface = analyseSurface(grayWarped, w, h);
+
+    const overall = centering.score * 0.35 + corners.score * 0.30 +
+                    edgesGrade.score * 0.20 + surface.score * 0.15;
+
+    const ordered = [
+      { x: guide.x, y: guide.y },
+      { x: guide.x + guide.w, y: guide.y },
+      { x: guide.x + guide.w, y: guide.y + guide.h },
+      { x: guide.x, y: guide.y + guide.h }
+    ];
+
+    return {
+      centering, corners, edges: edgesGrade, surface,
+      overall, ordered,
+      psaGrade: toPSA(overall)
+    };
+  } finally {
+    if (cropped) cropped.delete();
+    if (resized) resized.delete();
+    if (grayWarped) grayWarped.delete();
+  }
+}
 
 // Smoothing buffers for stable readings
 const SMOOTH_FRAMES = 8;
@@ -128,6 +208,35 @@ function analyseFrame() {
     const cap = new cv.VideoCapture(video);
     cap.read(src);
 
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+    // ── Guide Mode Path ──────────────────────────────────────
+    if (GUIDE_MODE) {
+      const guide = getGuideRect(video.videoWidth, video.videoHeight);
+      const hasCard = guideRegionHasCard(src, guide);
+
+      if (hasCard) {
+        const grade = gradeCardFromCrop(src, guide);
+        const syntheticContour = guideRectToContour(guide);
+        drawOverlay(syntheticContour, grade);
+        syntheticContour.delete();
+        updateUI(grade);
+        lastGrade = grade;
+        lastCardDetectedTime = performance.now();
+        document.getElementById('capture-btn').disabled = false;
+        document.getElementById('detection-status').textContent = 'Card in frame \u2014 hold steady';
+        document.getElementById('scan-line').classList.add('hidden');
+      } else {
+        drawGuideOverlay(guide);
+        document.getElementById('detection-status').textContent = 'Place card in frame';
+        document.getElementById('capture-btn').disabled = false; // always enabled in guide mode
+        document.getElementById('scan-line').classList.add('hidden');
+      }
+      if (src) src.delete();
+      return;
+    }
+
+    // ── Auto-Detect Path (original) ──────────────────────────
     gray = new cv.Mat();
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
     cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
@@ -151,8 +260,6 @@ function analyseFrame() {
     if (!cardContour) {
       cardContour = minAreaRectFallback(gray, src.cols, src.rows);
     }
-
-    ctx.clearRect(0, 0, overlay.width, overlay.height);
 
     // Compute mean brightness for tip messages
     const frameMean = new cv.Mat();
@@ -880,19 +987,45 @@ function drawOverlay(contour, grade) {
   blinkPhase = (blinkPhase + 0.15) % (Math.PI * 2);
   const blinkAlpha = centeringIsPSA10 ? 0.5 + 0.5 * Math.sin(blinkPhase) : 1.0;
 
-  // Card outline (thicker + blink when PSA 10 centering)
-  ctx.globalAlpha = blinkAlpha;
-  ctx.lineWidth = centeringIsPSA10 ? 4 : 3;
-  ctx.strokeStyle = color;
-  ctx.beginPath();
-  ctx.moveTo(pts[0].x, pts[0].y);
-  for (let i = 1; i < 4; i++) ctx.lineTo(pts[i].x, pts[i].y);
-  ctx.closePath();
-  ctx.stroke();
+  // In guide mode: draw dimmed background outside guide area
+  if (GUIDE_MODE) {
+    const guide = getGuideRect(overlay.width, overlay.height);
+    // Dim outside the guide
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    ctx.fillRect(0, 0, overlay.width, overlay.height);
+    ctx.clearRect(guide.x, guide.y, guide.w, guide.h);
 
-  ctx.fillStyle = color + '15';
-  ctx.fill();
-  ctx.globalAlpha = 1.0;
+    // Guide border colored by grade
+    const borderColor = grade.psaGrade >= 9 ? '#00C851' : grade.psaGrade >= 7 ? '#ff8800' : '#ff4444';
+    ctx.globalAlpha = blinkAlpha;
+    ctx.strokeStyle = borderColor;
+    ctx.lineWidth = centeringIsPSA10 ? 5 : 3;
+    drawRoundedRect(ctx, guide.x, guide.y, guide.w, guide.h, 12);
+    ctx.stroke();
+    ctx.globalAlpha = 1.0;
+
+    // "Card Locked" label
+    ctx.fillStyle = borderColor;
+    ctx.font = 'bold 14px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('\u2713 Card Locked', guide.x + guide.w / 2, guide.y - 10);
+  }
+
+  // Card outline (thicker + blink when PSA 10 centering)
+  if (!GUIDE_MODE) {
+    ctx.globalAlpha = blinkAlpha;
+    ctx.lineWidth = centeringIsPSA10 ? 4 : 3;
+    ctx.strokeStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < 4; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.closePath();
+    ctx.stroke();
+
+    ctx.fillStyle = color + '15';
+    ctx.fill();
+    ctx.globalAlpha = 1.0;
+  }
 
   // Corner indicators
   const cornerScores = grade.corners.individual;
@@ -940,6 +1073,62 @@ function drawOverlay(contour, grade) {
   ctx.moveTo(cx, cy - 15); ctx.lineTo(cx, cy + 15);
   ctx.stroke();
   ctx.setLineDash([]);
+}
+
+// Draw rounded rectangle helper
+function drawRoundedRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+// Guide overlay when no card is detected in guide mode
+function drawGuideOverlay(guide) {
+  // Dim outside the guide
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.fillRect(0, 0, overlay.width, overlay.height);
+  ctx.clearRect(guide.x, guide.y, guide.w, guide.h);
+
+  // White dashed rounded border
+  ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([10, 8]);
+  drawRoundedRect(ctx, guide.x, guide.y, guide.w, guide.h, 12);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Corner brackets for visual alignment cue
+  const bracketLen = 30;
+  ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+  ctx.lineWidth = 3;
+  ctx.setLineDash([]);
+  const corners = [
+    [guide.x, guide.y, 1, 1],
+    [guide.x + guide.w, guide.y, -1, 1],
+    [guide.x + guide.w, guide.y + guide.h, -1, -1],
+    [guide.x, guide.y + guide.h, 1, -1]
+  ];
+  for (const [cx, cy, dx, dy] of corners) {
+    ctx.beginPath();
+    ctx.moveTo(cx, cy + dy * bracketLen);
+    ctx.lineTo(cx, cy);
+    ctx.lineTo(cx + dx * bracketLen, cy);
+    ctx.stroke();
+  }
+
+  // Label
+  ctx.fillStyle = 'rgba(255,255,255,0.8)';
+  ctx.font = '16px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('Align card to frame', guide.x + guide.w / 2, guide.y + guide.h / 2);
 }
 
 function drawCenteringRulers(pts, centering) {
@@ -1073,6 +1262,21 @@ function setGradeRow(name, score) {
   const bar = document.getElementById(name + '-bar');
   bar.style.width = (score * 10) + '%';
   bar.className = 'grade-bar-fill ' + barClass(psa);
+}
+
+// ─── Mode Toggle ────────────────────────────────────────────────
+function toggleMode() {
+  GUIDE_MODE = !GUIDE_MODE;
+  const btn = document.getElementById('mode-toggle');
+  if (GUIDE_MODE) {
+    btn.innerHTML = '\u{1F50D} Auto';
+  } else {
+    btn.innerHTML = '\u{1F3AF} Guide';
+  }
+  // Reset smoothing buffers on mode switch
+  for (const key of Object.keys(gradeHistory)) {
+    gradeHistory[key] = [];
+  }
 }
 
 // ─── Panel Toggle ───────────────────────────────────────────────

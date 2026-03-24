@@ -151,6 +151,29 @@ html, body {
   z-index: 10;
 }
 
+/* ─── Mode Toggle Button ────────────────────────────────────── */
+#mode-toggle {
+  position: absolute;
+  top: max(env(safe-area-inset-top, 8px), 8px);
+  right: 16px;
+  z-index: 20;
+  background: rgba(30, 30, 50, 0.85);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 20px;
+  padding: 6px 14px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: background 0.2s, border-color 0.2s;
+}
+#mode-toggle:active {
+  background: rgba(60, 60, 90, 0.9);
+  border-color: var(--accent);
+}
+
 /* ─── Grade Badge (PSA Slab Style) ──────────────────────────── */
 #grade-badge {
   position: absolute;
