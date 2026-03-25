@@ -137,6 +137,47 @@ html, body {
   color: rgba(255,255,255,0.9);
 }
 
+/* ── Phase Prompt ────────────────────────────────────────────── */
+#phase-prompt {
+  position: fixed;
+  top: max(44px, calc(env(safe-area-inset-top) + 36px));
+  left: 16px;
+  right: 16px;
+  z-index: 10;
+  text-align: center;
+  font-size: 0.9rem;
+  font-weight: 700;
+  padding: 10px 16px;
+  border-radius: 12px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  transition: background 0.3s, color 0.3s;
+}
+
+#phase-prompt.phase-centering {
+  background: rgba(0, 229, 255, 0.2);
+  color: #00e5ff;
+  border: 1px solid rgba(0, 229, 255, 0.3);
+}
+
+#phase-prompt.phase-corners {
+  background: rgba(255, 152, 0, 0.2);
+  color: #FF9800;
+  border: 1px solid rgba(255, 152, 0, 0.3);
+}
+
+#phase-prompt.phase-surface {
+  background: rgba(156, 39, 176, 0.2);
+  color: #CE93D8;
+  border: 1px solid rgba(156, 39, 176, 0.3);
+}
+
+#phase-prompt.phase-complete {
+  background: rgba(0, 230, 118, 0.2);
+  color: #00e676;
+  border: 1px solid rgba(0, 230, 118, 0.3);
+}
+
 /* ── Grade Badge ─────────────────────────────────────────────── */
 #grade-badge {
   position: fixed;
@@ -156,6 +197,11 @@ html, body {
   box-shadow: 0 4px 24px rgba(0,0,0,0.5);
   border: 2px solid rgba(255,255,255,0.15);
   transition: background 0.3s, border-color 0.3s;
+}
+
+/* Shift badge down when phase prompt is visible */
+#phase-prompt:not(.hidden) ~ #grade-badge {
+  top: max(110px, calc(env(safe-area-inset-top) + 96px));
 }
 
 #grade-number {
@@ -203,6 +249,16 @@ html, body {
   background: linear-gradient(145deg, #FF5252, #C62828);
   border-color: #FF5252 !important;
   color: #fff;
+}
+
+/* Flash animation for grade locked */
+#grade-badge.flash {
+  animation: gradeFlash 0.4s ease-in-out 3;
+}
+
+@keyframes gradeFlash {
+  0%, 100% { opacity: 1; transform: translateX(-50%) scale(1); }
+  50% { opacity: 0.4; transform: translateX(-50%) scale(1.1); }
 }
 
 /* ── Bottom Panel ────────────────────────────────────────────── */
@@ -286,30 +342,43 @@ html, body {
   color: #FF5252;
 }
 
-/* ── Capture Button ──────────────────────────────────────────── */
-#capture-btn {
+/* ── Bottom Buttons ─────────────────────────────────────────── */
+#bottom-buttons {
   position: fixed;
   bottom: max(20px, env(safe-area-inset-bottom));
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
+  right: 0;
   z-index: 10;
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  padding: 0 16px;
+}
+
+#scan-btn, #capture-btn {
   background: rgba(255,255,255,0.15);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   color: #fff;
-  font-size: 1rem;
+  font-size: 0.95rem;
   font-weight: 700;
-  padding: 14px 32px;
+  padding: 14px 24px;
   border: 2px solid rgba(255,255,255,0.25);
   border-radius: 50px;
   cursor: pointer;
-  transition: background 0.2s, transform 0.1s;
+  transition: background 0.2s, transform 0.1s, border-color 0.2s;
   white-space: nowrap;
 }
 
-#capture-btn:active {
+#scan-btn:active, #capture-btn:active {
   background: rgba(255,255,255,0.3);
-  transform: translateX(-50%) scale(0.96);
+  transform: scale(0.96);
+}
+
+#scan-btn.active-scan {
+  background: rgba(0, 229, 255, 0.25);
+  border-color: #00e5ff;
+  color: #00e5ff;
 }
 
 /* ── Modal ───────────────────────────────────────────────────── */
