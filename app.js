@@ -112,7 +112,8 @@ function getGuideRect() {
   const h = Math.round(H * 0.52);
   const w = Math.round(h * (2.5 / 3.5));
   const x = Math.round((W - w) / 2);
-  const y = Math.round((H - h) / 2);
+  // Place frame in upper 55% of screen (top-biased, not centered)
+  const y = Math.round(H * 0.05);
   return { x, y, w, h };
 }
 
@@ -160,62 +161,91 @@ function analyzeCard(pixels, w, h) {
 
 // ── Centering ────────────────────────────────────────────────────
 function analyzeCentering(pixels, w, h) {
-  function findInnerLeft(sampleY) {
-    const startX = Math.round(w * 0.04);
-    const endX = Math.round(w * 0.40);
-    let maxSobel = 0, maxX = startX;
-    for (let x = startX; x < endX; x++) {
-      const s = sobelAt(pixels, w, h, x, sampleY);
-      if (s > maxSobel) { maxSobel = s; maxX = x; }
+  // Detect the inner printed image border by finding where the white border ends
+  // Pokémon cards have a white/light border around the inner colored image
+  // Scan inward from each edge to find where brightness drops (= image starts)
+
+  function findBorderWidth(scanFn, start, end) {
+    const edgeBrightness = scanFn(start + 2);
+    const isLightBorder = edgeBrightness > 160;
+
+    let borderEnd = Math.round((end - start) * 0.12);
+
+    if (isLightBorder) {
+      for (let pos = start + 2; pos < start + (end - start) * 0.40; pos += 1) {
+        const brightness = scanFn(pos);
+        if (brightness < edgeBrightness - 40) {
+          borderEnd = pos - start;
+          break;
+        }
+      }
+    } else {
+      borderEnd = Math.round((end - start) * 0.08);
     }
-    return maxSobel > 8 ? maxX : null;
-  }
-  function findInnerRight(sampleY) {
-    const startX = Math.round(w * 0.60);
-    const endX = Math.round(w * 0.96);
-    let maxSobel = 0, maxX = startX;
-    for (let x = startX; x < endX; x++) {
-      const s = sobelAt(pixels, w, h, x, sampleY);
-      if (s > maxSobel) { maxSobel = s; maxX = x; }
-    }
-    return maxSobel > 8 ? w - maxX : null;
-  }
-  function findInnerTop(sampleX) {
-    const startY = Math.round(h * 0.04);
-    const endY = Math.round(h * 0.30);
-    let maxSobel = 0, maxY = startY;
-    for (let y = startY; y < endY; y++) {
-      const s = sobelAt(pixels, w, h, sampleX, y);
-      if (s > maxSobel) { maxSobel = s; maxY = y; }
-    }
-    return maxSobel > 8 ? maxY : null;
-  }
-  function findInnerBottom(sampleX) {
-    const startY = Math.round(h * 0.70);
-    const endY = Math.round(h * 0.96);
-    let maxSobel = 0, maxY = startY;
-    for (let y = startY; y < endY; y++) {
-      const s = sobelAt(pixels, w, h, sampleX, y);
-      if (s > maxSobel) { maxSobel = s; maxY = y; }
-    }
-    return maxSobel > 8 ? h - maxY : null;
+
+    return Math.max(3, borderEnd);
   }
 
-  const y1 = Math.round(h * 0.25), y2 = Math.round(h * 0.50), y3 = Math.round(h * 0.75);
-  const x1 = Math.round(w * 0.25), x2 = Math.round(w * 0.50), x3 = Math.round(w * 0.75);
+  function rowBrightness(y) {
+    if (y < 0 || y >= h) return 128;
+    let sum = 0;
+    const step = Math.max(1, Math.round(w / 20));
+    let n = 0;
+    for (let x = Math.round(w*0.1); x < Math.round(w*0.9); x += step) {
+      sum += getGray(pixels, w, x, y);
+      n++;
+    }
+    return n > 0 ? sum / n : 128;
+  }
 
-  const lefts = [findInnerLeft(y1), findInnerLeft(y2), findInnerLeft(y3)].filter(v => v !== null);
-  const rights = [findInnerRight(y1), findInnerRight(y2), findInnerRight(y3)].filter(v => v !== null);
-  const tops = [findInnerTop(x1), findInnerTop(x2), findInnerTop(x3)].filter(v => v !== null);
-  const bots = [findInnerBottom(x1), findInnerBottom(x2), findInnerBottom(x3)].filter(v => v !== null);
+  function colBrightness(x) {
+    if (x < 0 || x >= w) return 128;
+    let sum = 0;
+    const step = Math.max(1, Math.round(h / 20));
+    let n = 0;
+    for (let y = Math.round(h*0.1); y < Math.round(h*0.9); y += step) {
+      sum += getGray(pixels, w, x, y);
+      n++;
+    }
+    return n > 0 ? sum / n : 128;
+  }
 
-  // If we couldn't detect borders well, flag it
-  const weakDetection = lefts.length < 2 || rights.length < 2 || tops.length < 2 || bots.length < 2;
+  const leftPx = findBorderWidth(colBrightness, 0, w);
 
-  const leftPx = lefts.length ? lefts.reduce((a,b)=>a+b,0)/lefts.length : w * 0.08;
-  const rightPx = rights.length ? rights.reduce((a,b)=>a+b,0)/rights.length : w * 0.08;
-  const topPx = tops.length ? tops.reduce((a,b)=>a+b,0)/tops.length : h * 0.08;
-  const botPx = bots.length ? bots.reduce((a,b)=>a+b,0)/bots.length : h * 0.08;
+  function findRightBorder() {
+    const edgeBrightness = colBrightness(w - 3);
+    const isLight = edgeBrightness > 160;
+    if (!isLight) return Math.round(w * 0.08);
+    for (let x = w - 3; x > w * 0.60; x--) {
+      const b = colBrightness(x);
+      if (b < edgeBrightness - 40) return w - x;
+    }
+    return Math.round(w * 0.12);
+  }
+  function findTopBorder() {
+    const edgeBrightness = rowBrightness(2);
+    const isLight = edgeBrightness > 160;
+    if (!isLight) return Math.round(h * 0.08);
+    for (let y = 2; y < h * 0.35; y++) {
+      const b = rowBrightness(y);
+      if (b < edgeBrightness - 40) return y;
+    }
+    return Math.round(h * 0.12);
+  }
+  function findBottomBorder() {
+    const edgeBrightness = rowBrightness(h - 3);
+    const isLight = edgeBrightness > 160;
+    if (!isLight) return Math.round(h * 0.08);
+    for (let y = h - 3; y > h * 0.65; y--) {
+      const b = rowBrightness(y);
+      if (b < edgeBrightness - 40) return h - y;
+    }
+    return Math.round(h * 0.12);
+  }
+
+  const rightPx = findRightBorder();
+  const topPx = findTopBorder();
+  const botPx = findBottomBorder();
 
   const lrTotal = leftPx + rightPx;
   const tbTotal = topPx + botPx;
@@ -232,24 +262,15 @@ function analyzeCentering(pixels, w, h) {
     return Math.max(1, 5 - (r - 70) / 5);
   }
 
-  const lrScore = ratioToScore(lrRatio);
-  const tbScore = ratioToScore(tbRatio);
-  let score = (lrScore + tbScore) / 2;
-
-  // If detection was weak, default to 7 instead of potentially wrong low score
-  if (weakDetection && score < 7) score = 7;
-
+  const score = (ratioToScore(lrRatio) + ratioToScore(tbRatio)) / 2;
   const lrPct = Math.round(lrRatio);
-  const lrOther = 100 - lrPct;
   const tbPct = Math.round(tbRatio);
-  const tbOther = 100 - tbPct;
 
   return {
-    score,
+    score: Math.max(1, Math.min(10, score)),
     lrRatio, tbRatio,
-    leftPx: Math.round(leftPx), rightPx: Math.round(rightPx),
-    topPx: Math.round(topPx), botPx: Math.round(botPx),
-    label: lrPct + "/" + lrOther + " L/R | " + tbPct + "/" + tbOther + " T/B"
+    leftPx, rightPx, topPx, botPx,
+    label: lrPct + "/" + (100-lrPct) + " L/R | " + tbPct + "/" + (100-tbPct) + " T/B"
   };
 }
 
@@ -696,85 +717,90 @@ function drawGuide(guide, grade) {
 // ── Centering Overlay ────────────────────────────────────────────
 function drawCenteringOverlay(ctx, guide, centering) {
   const { x, y, w, h } = guide;
+  const { leftPx, rightPx, topPx, botPx } = centering;
 
-  const leftPx = centering.leftPx;
-  const rightPx = centering.rightPx;
-  const topPx = centering.topPx;
-  const botPx = centering.botPx;
+  // Scale pixel measurements from analysis space (350px wide) to guide display space
+  const scaleX = w / 350;
+  const scaleY = h / 490;
 
-  // Left measurement: horizontal arrow at 30% down the card
-  const arrowY = y + h * 0.30;
-  drawMeasurementArrow(ctx, x, arrowY, x + leftPx, arrowY, "#00e5ff", leftPx + "px");
+  const lPx = Math.round(leftPx * scaleX);
+  const rPx = Math.round(rightPx * scaleX);
+  const tPx = Math.round(topPx * scaleY);
+  const bPx = Math.round(botPx * scaleY);
 
-  // Right measurement: horizontal arrow at 30% down
-  drawMeasurementArrow(ctx, x + w, arrowY, x + w - rightPx, arrowY, "#00e5ff", rightPx + "px");
+  // ── Left border arrow: from card left edge RIGHTWARD to image start ──
+  const midY = y + h * 0.35;
+  drawMeasArrow(ctx, x + 2, midY, x + lPx, midY, "#00e5ff", lPx + "px");
 
-  // Top measurement: vertical arrow at 30% across
-  const arrowX = x + w * 0.30;
-  drawMeasurementArrow(ctx, arrowX, y, arrowX, y + topPx, "#00e5ff", topPx + "px");
+  // ── Right border arrow: from card right edge LEFTWARD to image start ──
+  drawMeasArrow(ctx, x + w - 2, midY, x + w - rPx, midY, "#00e5ff", rPx + "px");
 
-  // Bottom measurement: vertical arrow at 30% across
-  drawMeasurementArrow(ctx, arrowX, y + h, arrowX, y + h - botPx, "#00e5ff", botPx + "px");
+  // ── Top border arrow: from card top edge DOWNWARD to image start ──
+  const midX = x + w * 0.65;
+  drawMeasArrow(ctx, midX, y + 2, midX, y + tPx, "#00e5ff", tPx + "px");
 
-  // Center crosshair: show where the image center actually is vs card center
-  const cardCenterX = x + w / 2;
-  const cardCenterY = y + h / 2;
-  const imageCenterX = x + (leftPx + (w - leftPx - rightPx) / 2);
-  const imageCenterY = y + (topPx + (h - topPx - botPx) / 2);
+  // ── Bottom border arrow: from card bottom edge UPWARD to image start ──
+  drawMeasArrow(ctx, midX, y + h - 2, midX, y + h - bPx, "#00e5ff", bPx + "px");
 
-  // Draw crosshair at actual image center
-  ctx.strokeStyle = "#FF9800";
-  ctx.lineWidth = 1.5;
-  ctx.setLineDash([4, 4]);
-  ctx.beginPath(); ctx.moveTo(imageCenterX - 20, imageCenterY); ctx.lineTo(imageCenterX + 20, imageCenterY); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(imageCenterX, imageCenterY - 20); ctx.lineTo(imageCenterX, imageCenterY + 20); ctx.stroke();
+  // ── Thin lines marking where the image border IS (the detected transition) ──
+  ctx.strokeStyle = "rgba(0, 229, 255, 0.4)";
+  ctx.lineWidth = 1;
+  ctx.setLineDash([3, 3]);
+  ctx.beginPath(); ctx.moveTo(x + lPx, y + h*0.1); ctx.lineTo(x + lPx, y + h*0.6); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x + w - rPx, y + h*0.1); ctx.lineTo(x + w - rPx, y + h*0.6); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x + w*0.1, y + tPx); ctx.lineTo(x + w*0.9, y + tPx); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x + w*0.1, y + h - bPx); ctx.lineTo(x + w*0.9, y + h - bPx); ctx.stroke();
   ctx.setLineDash([]);
 
-  // Draw offset line from card center to image center
-  if (Math.abs(imageCenterX - cardCenterX) > 3 || Math.abs(imageCenterY - cardCenterY) > 3) {
-    ctx.strokeStyle = "rgba(255, 152, 0, 0.6)";
-    ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(cardCenterX, cardCenterY); ctx.lineTo(imageCenterX, imageCenterY); ctx.stroke();
-  }
-
-  // LR ratio label centered at top of guide
-  ctx.fillStyle = "#00e5ff";
-  ctx.font = "bold 14px monospace";
+  // ── L/R and T/B ratio labels — INSIDE the guide, not outside ──
+  ctx.font = "bold 13px monospace";
   ctx.textAlign = "center";
-  ctx.fillText("L/R: " + Math.round(centering.lrRatio) + "/" + Math.round(100 - centering.lrRatio), x + w/2, y - 10);
-  ctx.fillText("T/B: " + Math.round(centering.tbRatio) + "/" + Math.round(100 - centering.tbRatio), x + w/2, y + h + 20);
+
+  const lrPct = Math.round(centering.lrRatio);
+  const lrColor = centering.score >= 9 ? "#00e676" : centering.score >= 8 ? "#FFD700" : "#FF5252";
+  ctx.fillStyle = lrColor;
+  ctx.fillText("\u2190 " + lrPct + " : " + (100-lrPct) + " \u2192", x + w/2, y + h * 0.08);
+
+  const tbPct = Math.round(centering.tbRatio);
+  const tbColor = centering.score >= 9 ? "#00e676" : centering.score >= 8 ? "#FFD700" : "#FF5252";
+  ctx.save();
+  ctx.translate(x + w - 18, y + h/2);
+  ctx.rotate(-Math.PI/2);
+  ctx.fillStyle = tbColor;
+  ctx.fillText("\u2191" + tbPct + ":" + (100-tbPct) + "\u2193", 0, 0);
+  ctx.restore();
 }
 
-function drawMeasurementArrow(ctx, x1, y1, x2, y2, color, label) {
+function drawMeasArrow(ctx, x1, y1, x2, y2, color, label) {
   const dx = x2 - x1, dy = y2 - y1;
   const len = Math.sqrt(dx*dx + dy*dy);
-  if (len < 5) return;
+  if (len < 4) return;
 
   ctx.strokeStyle = color;
   ctx.fillStyle = color;
-  ctx.lineWidth = 1.5;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([]);
 
-  // Line
   ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
 
-  // Arrowhead at x2,y2
+  // Arrowhead at endpoint (x2,y2)
   const angle = Math.atan2(dy, dx);
-  const arrowLen = 8;
+  const al = 7;
   ctx.beginPath();
   ctx.moveTo(x2, y2);
-  ctx.lineTo(x2 - arrowLen * Math.cos(angle - 0.4), y2 - arrowLen * Math.sin(angle - 0.4));
-  ctx.lineTo(x2 - arrowLen * Math.cos(angle + 0.4), y2 - arrowLen * Math.sin(angle + 0.4));
+  ctx.lineTo(x2 - al * Math.cos(angle - 0.4), y2 - al * Math.sin(angle - 0.4));
+  ctx.lineTo(x2 - al * Math.cos(angle + 0.4), y2 - al * Math.sin(angle + 0.4));
   ctx.closePath();
   ctx.fill();
 
-  // Label at midpoint
-  const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
-  ctx.font = "11px monospace";
-  ctx.textAlign = "center";
-  ctx.fillStyle = color;
-  // Offset label slightly perpendicular
-  const perpX = -dy / len * 12, perpY = dx / len * 12;
-  ctx.fillText(label, mx + perpX, my + perpY);
+  // Label at midpoint, offset perpendicularly
+  if (len > 20) {
+    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+    const perpX = -dy / len * 13, perpY = dx / len * 13;
+    ctx.font = "11px monospace";
+    ctx.textAlign = "center";
+    ctx.fillText(label, mx + perpX, my + perpY);
+  }
 }
 
 // ── Update UI ────────────────────────────────────────────────────
