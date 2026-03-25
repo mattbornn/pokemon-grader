@@ -137,172 +137,81 @@ html, body {
   color: rgba(255,255,255,0.9);
 }
 
-/* ── Phase Prompt ────────────────────────────────────────────── */
-#phase-prompt {
-  position: fixed;
-  top: max(44px, calc(env(safe-area-inset-top) + 36px));
-  left: 16px;
-  right: 16px;
-  z-index: 10;
-  text-align: center;
-  font-size: 0.9rem;
-  font-weight: 700;
-  padding: 10px 16px;
-  border-radius: 12px;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  transition: background 0.3s, color 0.3s;
-}
-
-#phase-prompt.phase-centering {
-  background: rgba(0, 229, 255, 0.2);
-  color: #00e5ff;
-  border: 1px solid rgba(0, 229, 255, 0.3);
-}
-
-#phase-prompt.phase-corners {
-  background: rgba(255, 152, 0, 0.2);
-  color: #FF9800;
-  border: 1px solid rgba(255, 152, 0, 0.3);
-}
-
-#phase-prompt.phase-surface {
-  background: rgba(156, 39, 176, 0.2);
-  color: #CE93D8;
-  border: 1px solid rgba(156, 39, 176, 0.3);
-}
-
-#phase-prompt.phase-complete {
-  background: rgba(0, 230, 118, 0.2);
-  color: #00e676;
-  border: 1px solid rgba(0, 230, 118, 0.3);
-}
-
-/* ── Grade Badge ─────────────────────────────────────────────── */
-#grade-badge {
-  position: fixed;
-  top: max(60px, calc(env(safe-area-inset-top) + 48px));
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 10;
-  width: 88px;
-  height: 88px;
-  border-radius: 12px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  box-shadow: 0 4px 24px rgba(0,0,0,0.5);
-  border: 2px solid rgba(255,255,255,0.15);
-  transition: background 0.3s, border-color 0.3s;
-}
-
-/* Shift badge down when phase prompt is visible */
-#phase-prompt:not(.hidden) ~ #grade-badge {
-  top: max(110px, calc(env(safe-area-inset-top) + 96px));
-}
-
-#grade-number {
-  font-size: 2.4rem;
-  font-weight: 900;
-  line-height: 1;
-  letter-spacing: -0.04em;
-}
-
-#grade-label {
-  font-size: 0.6rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  margin-top: 2px;
-  opacity: 0.9;
-}
-
-/* Grade color variants */
-.grade-10 {
-  background: linear-gradient(145deg, #FFD700, #FFA000);
-  border-color: #FFD700 !important;
-  color: #000;
-}
-
-.grade-9 {
-  background: linear-gradient(145deg, #00c853, #009624);
-  border-color: #00e676 !important;
-  color: #fff;
-}
-
-.grade-8 {
-  background: linear-gradient(145deg, #2979FF, #1565C0);
-  border-color: #448AFF !important;
-  color: #fff;
-}
-
-.grade-7 {
-  background: linear-gradient(145deg, #FF9100, #E65100);
-  border-color: #FFAB40 !important;
-  color: #fff;
-}
-
-.grade-low {
-  background: linear-gradient(145deg, #FF5252, #C62828);
-  border-color: #FF5252 !important;
-  color: #fff;
-}
-
-/* Flash animation for grade locked */
-#grade-badge.flash {
-  animation: gradeFlash 0.4s ease-in-out 3;
-}
-
-@keyframes gradeFlash {
-  0%, 100% { opacity: 1; transform: translateX(-50%) scale(1); }
-  50% { opacity: 0.4; transform: translateX(-50%) scale(1.1); }
-}
-
 /* ── Bottom Panel ────────────────────────────────────────────── */
 #panel {
   position: fixed;
   bottom: 0;
   left: 0;
   right: 0;
-  max-height: 30vh;
-  overflow-y: auto;
   background: rgba(10, 10, 20, 0.92);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   z-index: 20;
-  padding: 8px 12px;
+  padding: 0;
+  padding-bottom: max(8px, env(safe-area-inset-bottom));
   font-size: 12px;
-}
-
-#panel.collapsed {
-  max-height: 80px;
-  overflow: hidden;
+  transition: max-height 0.3s ease;
 }
 
 #panel-toggle {
   display: flex;
   align-items: center;
-  justify-content: center;
-  background: none;
-  border: none;
-  color: rgba(255,255,255,0.6);
-  font-size: 0.75rem;
-  padding: 2px 0 4px;
-  width: 100%;
+  justify-content: space-between;
+  padding: 10px 16px;
   cursor: pointer;
 }
 
-#panel-toggle .arrow {
-  display: inline-block;
+#grade-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#grade-number {
+  font-size: 1.8rem;
+  font-weight: 900;
+  line-height: 1;
+  letter-spacing: -0.04em;
+}
+
+#grade-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.8;
+}
+
+#toggle-arrow {
+  font-size: 0.8rem;
+  color: rgba(255,255,255,0.5);
   transition: transform 0.3s ease;
 }
 
-#panel.collapsed #panel-toggle .arrow {
+#panel.collapsed #toggle-arrow {
   transform: rotate(180deg);
 }
+
+#panel.collapsed #panel-detail {
+  display: none;
+}
+
+#panel-detail {
+  padding: 0 16px 8px;
+}
+
+/* Grade color variants on the badge number */
+.grade-10 #grade-number { color: #FFD700; }
+.grade-9 #grade-number { color: #00e676; }
+.grade-8 #grade-number { color: #448AFF; }
+.grade-7 #grade-number { color: #FF9100; }
+.grade-low #grade-number { color: #FF5252; }
+
+.grade-10 #grade-label { color: #FFD700; }
+.grade-9 #grade-label { color: #00e676; }
+.grade-8 #grade-label { color: #448AFF; }
+.grade-7 #grade-label { color: #FF9100; }
+.grade-low #grade-label { color: #FF5252; }
 
 .panel-row {
   display: flex;
@@ -332,27 +241,14 @@ html, body {
   font-size: 0.72rem;
 }
 
-.psa10-row {
-  margin-top: 6px;
-  padding-top: 8px;
-  border-top: 1px solid rgba(255,255,255,0.12);
-  border-bottom: none;
-}
-
-.psa10-row .label {
-  color: rgba(255,255,255,0.9);
-  font-weight: 700;
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
 /* PSA 10 Checklist */
 #psa10-checklist {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 4px 12px;
-  padding-top: 6px;
+  padding-top: 8px;
+  margin-top: 6px;
+  border-top: 1px solid rgba(255,255,255,0.12);
 }
 
 .check-item {
@@ -369,163 +265,6 @@ html, body {
   color: #FF5252;
 }
 
-/* ── Bottom Buttons ─────────────────────────────────────────── */
-#bottom-buttons {
-  position: fixed;
-  bottom: calc(30vh + 8px);
-  left: 0;
-  right: 0;
-  z-index: 21;
-  display: flex;
-  justify-content: center;
-  gap: 12px;
-  padding: 0 16px;
-}
-
-#scan-btn, #capture-btn {
-  background: rgba(255,255,255,0.15);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  color: #fff;
-  font-size: 0.95rem;
-  font-weight: 700;
-  padding: 14px 24px;
-  border: 2px solid rgba(255,255,255,0.25);
-  border-radius: 50px;
-  cursor: pointer;
-  transition: background 0.2s, transform 0.1s, border-color 0.2s;
-  white-space: nowrap;
-}
-
-#scan-btn:active, #capture-btn:active {
-  background: rgba(255,255,255,0.3);
-  transform: scale(0.96);
-}
-
-#scan-btn.active-scan {
-  background: rgba(0, 229, 255, 0.25);
-  border-color: #00e5ff;
-  color: #00e5ff;
-}
-
-/* ── Modal ───────────────────────────────────────────────────── */
-#modal {
-  position: fixed;
-  inset: 0;
-  z-index: 100;
-  background: rgba(0,0,0,0.85);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 20px;
-  padding-top: max(20px, env(safe-area-inset-top));
-  padding-bottom: max(20px, env(safe-area-inset-bottom));
-}
-
-.modal-content {
-  background: rgba(20, 20, 35, 0.95);
-  border-radius: 20px;
-  padding: 24px 20px;
-  width: 100%;
-  max-width: 400px;
-  max-height: 90vh;
-  overflow-y: auto;
-  border: 1px solid rgba(255,255,255,0.1);
-  box-shadow: 0 8px 40px rgba(0,0,0,0.6);
-  position: relative;
-}
-
-.modal-content h2 {
-  font-size: 1.2rem;
-  font-weight: 700;
-  margin-bottom: 16px;
-  text-align: center;
-}
-
-#modal-close {
-  position: absolute;
-  top: 12px;
-  right: 14px;
-  background: rgba(255,255,255,0.1);
-  border: none;
-  color: #fff;
-  font-size: 1.1rem;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-#modal-close:active {
-  background: rgba(255,255,255,0.2);
-}
-
-#modal-canvas {
-  width: 100%;
-  border-radius: 12px;
-  margin-bottom: 16px;
-  display: block;
-}
-
-/* Modal detail sections */
-.modal-grade {
-  font-size: 1.4rem;
-  font-weight: 800;
-  text-align: center;
-  margin-bottom: 12px;
-  color: #FFD700;
-}
-
-.modal-scores {
-  font-size: 0.85rem;
-  line-height: 1.8;
-  color: rgba(255,255,255,0.85);
-}
-
-.modal-scores div {
-  padding: 2px 0;
-}
-
-.checklist {
-  margin-top: 12px;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 6px;
-  font-size: 0.82rem;
-}
-
-.checklist .pass {
-  color: #00e676;
-}
-
-.checklist .fail {
-  color: #FF5252;
-}
-
-#save-btn {
-  display: block;
-  width: 100%;
-  margin-top: 16px;
-  padding: 14px;
-  background: linear-gradient(145deg, #2979FF, #1565C0);
-  color: #fff;
-  font-size: 1rem;
-  font-weight: 700;
-  border: none;
-  border-radius: 12px;
-  cursor: pointer;
-  transition: opacity 0.2s;
-}
-
-#save-btn:active {
-  opacity: 0.8;
-}
-
 /* ── Scrollbar (panel) ──────────────────────────────────────── */
 #panel::-webkit-scrollbar {
   width: 4px;
@@ -536,20 +275,6 @@ html, body {
 }
 
 #panel::-webkit-scrollbar-thumb {
-  background: rgba(255,255,255,0.15);
-  border-radius: 2px;
-}
-
-/* ── Scrollbar (modal) ───────────────────────────────────────── */
-.modal-content::-webkit-scrollbar {
-  width: 4px;
-}
-
-.modal-content::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.modal-content::-webkit-scrollbar-thumb {
   background: rgba(255,255,255,0.15);
   border-radius: 2px;
 }

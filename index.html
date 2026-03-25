@@ -21,7 +21,7 @@
     <!-- Camera layer -->
     <video id="video" autoplay playsinline muted></video>
 
-    <!-- Overlay canvas (guide + annotations) -->
+    <!-- Overlay canvas (annotations) -->
     <canvas id="overlay"></canvas>
 
     <!-- Hidden analysis canvas -->
@@ -30,67 +30,27 @@
     <!-- Top bar -->
     <div id="topbar">
       <span id="fps">-- fps</span>
-      <span id="status">Align card to frame</span>
+      <span id="status">Point camera at card</span>
     </div>
 
-    <!-- Phase prompt -->
-    <div id="phase-prompt" class="hidden"></div>
-
-    <!-- Grade badge -->
-    <div id="grade-badge" class="hidden">
-      <div id="grade-number">--</div>
-      <div id="grade-label">Analyzing...</div>
-    </div>
-
-    <!-- Sub-scores panel -->
+    <!-- Bottom panel -->
     <div id="panel" class="collapsed">
-      <div class="panel-row" id="panel-overall-row">
-        <span class="label">Overall Grade</span>
-        <span id="sc-overall">--</span>
+      <div id="panel-toggle">
+        <span id="grade-badge"><span id="grade-number">--</span> <span id="grade-label">--</span></span>
+        <span id="toggle-arrow">▲</span>
       </div>
-      <button id="panel-toggle"><span class="arrow">▲</span> Details</button>
-      <div class="panel-row">
-        <span class="label">🎯 Centering</span>
-        <span id="sc-centering">--</span>
+      <div id="panel-detail">
+        <div class="panel-row"><span class="label">🎯 Centering</span><span id="sc-centering">--</span></div>
+        <div class="panel-row"><span class="label">📐 Corners</span><span id="sc-corners">--</span></div>
+        <div class="panel-row"><span class="label">📏 Edges</span><span id="sc-edges">--</span></div>
+        <div class="panel-row"><span class="label">✨ Surface</span><span id="sc-surface">--</span></div>
+        <div id="psa10-checklist">
+          <div class="check-item" id="chk-centering">⬜ Centering ≤ 55/45</div>
+          <div class="check-item" id="chk-corners">⬜ Corners 9+</div>
+          <div class="check-item" id="chk-edges">⬜ Edges 9+</div>
+          <div class="check-item" id="chk-surface">⬜ Surface 9+</div>
+        </div>
       </div>
-      <div class="panel-row">
-        <span class="label">📐 Corners</span>
-        <span id="sc-corners">--</span>
-      </div>
-      <div class="panel-row">
-        <span class="label">📏 Edges</span>
-        <span id="sc-edges">--</span>
-      </div>
-      <div class="panel-row">
-        <span class="label">✨ Surface</span>
-        <span id="sc-surface">--</span>
-      </div>
-      <div class="panel-row psa10-row">
-        <span class="label">PSA 10 Requirements</span>
-      </div>
-      <div id="psa10-checklist">
-        <div class="check-item" id="chk-centering">⬜ Centering ≤ 55/45</div>
-        <div class="check-item" id="chk-corners">⬜ Corners 9+</div>
-        <div class="check-item" id="chk-edges">⬜ Edges 9+</div>
-        <div class="check-item" id="chk-surface">⬜ Surface 9+</div>
-      </div>
-    </div>
-
-    <!-- Bottom buttons -->
-    <div id="bottom-buttons">
-      <button id="scan-btn">▶ Start Scan</button>
-      <button id="capture-btn">📸 Capture</button>
-    </div>
-  </div>
-
-  <!-- Detail modal -->
-  <div id="modal" class="hidden">
-    <div class="modal-content">
-      <button id="modal-close">✕</button>
-      <h2>Card Analysis</h2>
-      <canvas id="modal-canvas"></canvas>
-      <div id="modal-detail"></div>
-      <button id="save-btn">💾 Save PNG</button>
     </div>
   </div>
 

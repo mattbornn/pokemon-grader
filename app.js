@@ -12,18 +12,6 @@ let frameCount = 0, fpsTime = performance.now(), fps = 0;
 const SMOOTH = 8;
 const history = { overall:[], centering:[], corners:[], edges:[], surface:[], lr:[], tb:[] };
 
-// Accumulative scan state
-let scanSession = {
-  active: false,
-  readings: [],
-  maxReadings: 60,
-  startTime: null,
-  scanPhase: "centering",
-  phaseReadings: { centering: 0, corners: 0, surface: 0 },
-  finalGrade: null,
-  locked: false
-};
-
 // ── Start ────────────────────────────────────────────────────────
 async function start() {
   document.getElementById("load-msg").textContent = "Requesting camera...";
@@ -61,60 +49,112 @@ function loop() {
     document.getElementById("fps").textContent = fps + " fps";
   }
 
-  // Capture frame to hidden canvas
   captureCtx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
-
-  // Get guide rect
-  const guide = getGuideRect();
-
-  // Get pixel data from guide region
-  const imageData = captureCtx.getImageData(guide.x, guide.y, guide.w, guide.h);
-  const pixels = imageData.data; // RGBA flat array
-
-  // Check if card is present (brightness variance check)
-  const variance = getBrightnessVariance(pixels, guide.w, guide.h);
-
   overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
 
-  if (variance < 30) {
-    // Nothing in frame
-    drawGuide(guide, null);
-    if (!scanSession.active) {
-      document.getElementById("status").textContent = "Align card to frame";
-    }
-    document.getElementById("grade-badge").classList.add("hidden");
+  const bounds = detectCardBounds();
+  const imageData = captureCtx.getImageData(bounds.x, bounds.y, bounds.w, bounds.h);
+  const pixels = imageData.data;
+
+  const variance = getBrightnessVariance(pixels, bounds.w, bounds.h);
+  if (variance < 20) {
+    document.getElementById("status").textContent = "Point camera at card";
+    document.getElementById("panel").classList.add("no-grade");
     return;
   }
+  document.getElementById("panel").classList.remove("no-grade");
 
-  // Run analysis
-  const grade = analyzeCard(pixels, guide.w, guide.h);
+  const grade = analyzeCard(pixels, bounds.w, bounds.h);
+  const smoothed = addSmooth(grade);
+  lastGrade = smoothed;
 
-  if (scanSession.active && !scanSession.locked) {
-    // Accumulative mode
-    accumulateReading(grade);
-    drawGuide(guide, lastGrade);
-    drawScanProgressRing(overlayCtx, guide);
-  } else if (!scanSession.active) {
-    // Live preview mode (no scan active) — smooth as before
-    const smooth = addSmooth(grade);
-    lastGrade = smooth;
-    drawGuide(guide, smooth);
-    updateUI(smooth);
-  } else {
-    // Scan locked — keep showing final grade
-    drawGuide(guide, scanSession.finalGrade);
-  }
+  drawCardOverlay(bounds, smoothed);
+  updateUI(smoothed);
 }
 
-// ── Guide Rect ───────────────────────────────────────────────────
-function getGuideRect() {
-  const W = overlay.width, H = overlay.height;
-  const h = Math.round(H * 0.52);
-  const w = Math.round(h * (2.5 / 3.5));
-  const x = Math.round((W - w) / 2);
-  // Place frame in upper 55% of screen (top-biased, not centered)
-  const y = Math.round(H * 0.05);
-  return { x, y, w, h };
+// ── Card Detection ──────────────────────────────────────────────
+function detectCardBounds() {
+  const W = captureCanvas.width, H = captureCanvas.height;
+  const fullData = captureCtx.getImageData(0, 0, W, H);
+  const pixels = fullData.data;
+
+  let topEdge = Math.round(H * 0.05);
+  let botEdge = Math.round(H * 0.95);
+  let leftEdge = Math.round(W * 0.05);
+  let rightEdge = Math.round(W * 0.95);
+
+  const midX = Math.round(W / 2);
+
+  // Scan down from top to find where brightness jumps (top of card)
+  let prevBright = getGrayFull(pixels, W, midX, 0);
+  for (let y = 5; y < H * 0.5; y += 3) {
+    const bright = getGrayFull(pixels, W, midX, y);
+    if (Math.abs(bright - prevBright) > 30 || bright > 160) {
+      topEdge = y;
+      break;
+    }
+    prevBright = bright;
+  }
+
+  // Scan up from bottom
+  prevBright = getGrayFull(pixels, W, midX, H - 1);
+  for (let y = H - 5; y > H * 0.5; y -= 3) {
+    const bright = getGrayFull(pixels, W, midX, y);
+    if (Math.abs(bright - prevBright) > 30 || bright > 160) {
+      botEdge = y;
+      break;
+    }
+    prevBright = bright;
+  }
+
+  const midY = Math.round((topEdge + botEdge) / 2);
+
+  // Scan right from left
+  prevBright = getGrayFull(pixels, W, 0, midY);
+  for (let x = 5; x < W * 0.5; x += 3) {
+    const bright = getGrayFull(pixels, W, x, midY);
+    if (Math.abs(bright - prevBright) > 30 || bright > 160) {
+      leftEdge = x;
+      break;
+    }
+    prevBright = bright;
+  }
+
+  // Scan left from right
+  prevBright = getGrayFull(pixels, W, W - 1, midY);
+  for (let x = W - 5; x > W * 0.5; x -= 3) {
+    const bright = getGrayFull(pixels, W, x, midY);
+    if (Math.abs(bright - prevBright) > 30 || bright > 160) {
+      rightEdge = x;
+      break;
+    }
+    prevBright = bright;
+  }
+
+  const cardW = rightEdge - leftEdge;
+  const cardH = botEdge - topEdge;
+  const aspect = cardH / cardW;
+
+  // Validate: card should have roughly 1.4 aspect ratio and be a reasonable size
+  const minSize = Math.min(W, H) * 0.20;
+  if (cardW < minSize || cardH < minSize || aspect < 0.8 || aspect > 2.5) {
+    // Fallback: use center 70% of frame
+    const fw = Math.round(W * 0.70);
+    const fh = Math.round(fw * 1.4);
+    return {
+      x: Math.round((W - fw) / 2),
+      y: Math.round((H - fh) / 2),
+      w: fw, h: fh,
+      detected: false
+    };
+  }
+
+  return { x: leftEdge, y: topEdge, w: cardW, h: cardH, detected: true };
+}
+
+function getGrayFull(pixels, W, x, y) {
+  const i = (y * W + x) * 4;
+  return 0.299 * pixels[i] + 0.587 * pixels[i+1] + 0.114 * pixels[i+2];
 }
 
 // ── Pixel helpers ────────────────────────────────────────────────
@@ -125,7 +165,6 @@ function getGray(pixels, w, x, y) {
 
 function getBrightnessVariance(pixels, w, h) {
   let sum = 0, sumSq = 0, n = 0;
-  // Sample every 8th pixel for speed
   for (let y = 0; y < h; y += 8) {
     for (let x = 0; x < w; x += 8) {
       const g = getGray(pixels, w, x, y);
@@ -161,10 +200,6 @@ function analyzeCard(pixels, w, h) {
 
 // ── Centering ────────────────────────────────────────────────────
 function analyzeCentering(pixels, w, h) {
-  // Detect the inner printed image border by finding where the white border ends
-  // Pokémon cards have a white/light border around the inner colored image
-  // Scan inward from each edge to find where brightness drops (= image starts)
-
   function findBorderWidth(scanFn, start, end) {
     const edgeBrightness = scanFn(start + 2);
     const isLightBorder = edgeBrightness > 160;
@@ -276,7 +311,6 @@ function analyzeCentering(pixels, w, h) {
 
 // ── Corners ──────────────────────────────────────────────────────
 function analyzeCorners(pixels, w, h) {
-  // Small region at each corner tip — check for whitening (worn corners)
   const cw = Math.round(w * 0.07);
   const ch = Math.round(h * 0.05);
 
@@ -352,9 +386,6 @@ function analyzeEdges(pixels, w, h) {
 
 // ── Surface ──────────────────────────────────────────────────────
 function analyzeSurface(pixels, w, h) {
-  // Local variance approach — Sobel picks up card texture/print as scratches.
-  // True scratches = bright linear anomalies against local background.
-  // Card texture = uniform fine pattern (low local variance).
   const mx = Math.round(w * 0.12), my = Math.round(h * 0.12);
   let anomalyCount = 0, totalSamples = 0;
   const ANOMALY_THRESHOLD = 35;
@@ -428,298 +459,52 @@ function addSmooth(grade) {
   };
 }
 
-// ── Accumulative Scan ────────────────────────────────────────────
-function startScan() {
-  scanSession = {
-    active: true,
-    readings: [],
-    maxReadings: 60,
-    startTime: Date.now(),
-    scanPhase: "centering",
-    phaseReadings: { centering: 0, corners: 0, surface: 0 },
-    finalGrade: null,
-    locked: false
-  };
-  // Clear smoothing history
-  Object.keys(history).forEach(k => history[k].length = 0);
-  lastGrade = null;
-
-  const scanBtn = document.getElementById("scan-btn");
-  scanBtn.textContent = "⟳ Reset";
-  scanBtn.classList.add("active-scan");
-
-  document.getElementById("phase-prompt").classList.remove("hidden");
-  updatePhasePrompt();
-}
-
-function resetScan() {
-  scanSession.active = false;
-  scanSession.locked = false;
-  scanSession.readings = [];
-  scanSession.finalGrade = null;
-  lastGrade = null;
-  Object.keys(history).forEach(k => history[k].length = 0);
-
-  const scanBtn = document.getElementById("scan-btn");
-  scanBtn.textContent = "▶ Start Scan";
-  scanBtn.classList.remove("active-scan");
-
-  document.getElementById("phase-prompt").classList.add("hidden");
-  document.getElementById("grade-badge").classList.remove("flash");
-}
-
-function accumulateReading(grade) {
-  if (!scanSession.active || scanSession.locked) return;
-
-  scanSession.readings.push({
-    ...grade,
-    timestamp: Date.now()
-  });
-
-  // Keep rolling window
-  if (scanSession.readings.length > scanSession.maxReadings) {
-    scanSession.readings.shift();
-  }
-
-  // Calculate accumulated grade
-  const accumulated = computeAccumulatedGrade(scanSession.readings);
-  lastGrade = accumulated;
-  updateUI(accumulated);
-
-  // Auto-advance phases
-  const elapsed = (Date.now() - scanSession.startTime) / 1000;
-  if (elapsed < 5) scanSession.scanPhase = "centering";
-  else if (elapsed < 10) scanSession.scanPhase = "corners";
-  else if (elapsed < 15) scanSession.scanPhase = "surface";
-  else {
-    scanSession.locked = true;
-    scanSession.finalGrade = accumulated;
-    scanSession.scanPhase = "complete";
-    showGradeLocked(accumulated);
-  }
-
-  updatePhasePrompt();
-}
-
-function computeAccumulatedGrade(readings) {
-  if (readings.length === 0) return null;
-
-  const n = readings.length;
-  let weightedCentering = 0, weightedCorners = 0, weightedEdges = 0, weightedSurface = 0;
-  let totalWeight = 0;
-
-  let bestCenteringScore = 0;
-  let worstCornersScore = 10;
-  let worstSurfaceScore = 10;
-
-  readings.forEach((r, i) => {
-    const weight = (i + 1) / n;
-    weightedCentering += r.centering.score * weight;
-    weightedCorners += r.corners.score * weight;
-    weightedEdges += r.edges.score * weight;
-    weightedSurface += r.surface.score * weight;
-    totalWeight += weight;
-
-    if (r.centering.score > bestCenteringScore) bestCenteringScore = r.centering.score;
-    if (r.corners.score < worstCornersScore) worstCornersScore = r.corners.score;
-    if (r.surface.score < worstSurfaceScore) worstSurfaceScore = r.surface.score;
-  });
-
-  const centeringFinal = bestCenteringScore * 0.7 + (weightedCentering / totalWeight) * 0.3;
-  const cornersFinal = worstCornersScore * 0.4 + (weightedCorners / totalWeight) * 0.6;
-  const edgesFinal = weightedEdges / totalWeight;
-  const surfaceFinal = worstSurfaceScore * 0.3 + (weightedSurface / totalWeight) * 0.7;
-
-  const overall = centeringFinal * 0.35 + cornersFinal * 0.30 + edgesFinal * 0.20 + surfaceFinal * 0.15;
-
-  const latest = readings[readings.length - 1];
-  return {
-    ...latest,
-    centering: { ...latest.centering, score: centeringFinal },
-    corners: { ...latest.corners, score: cornersFinal },
-    edges: { ...latest.edges, score: edgesFinal },
-    surface: { ...latest.surface, score: surfaceFinal },
-    overall,
-    psaGrade: toPSA(overall),
-    readingCount: readings.length,
-    accumulated: true
-  };
-}
-
-function updatePhasePrompt() {
-  const el = document.getElementById("phase-prompt");
-  const elapsed = scanSession.startTime ? (Date.now() - scanSession.startTime) / 1000 : 0;
-  const readingCount = scanSession.readings.length;
-
-  switch (scanSession.scanPhase) {
-    case "centering":
-      el.textContent = "📐 Hold card flat in frame";
-      el.className = "phase-centering";
-      break;
-    case "corners":
-      el.textContent = "🔍 Move closer to corners";
-      el.className = "phase-corners";
-      break;
-    case "surface":
-      el.textContent = "✨ Show card surface";
-      el.className = "phase-surface";
-      break;
-    case "complete":
-      el.textContent = "🏆 Grade locked!";
-      el.className = "phase-complete";
-      break;
-  }
-
-  if (scanSession.active && !scanSession.locked) {
-    const progress = Math.min(1, elapsed / 15);
-    el.textContent += " · " + readingCount + " readings · " + Math.round(progress * 100) + "%";
-  }
-}
-
-function showGradeLocked(grade) {
-  const scanBtn = document.getElementById("scan-btn");
-  scanBtn.textContent = "🔄 Scan Again";
-  scanBtn.classList.remove("active-scan");
-
-  document.getElementById("status").textContent = "🔒 Grade Locked · PSA ~" + grade.psaGrade.grade;
-
-  // Flash badge
-  const badge = document.getElementById("grade-badge");
-  badge.classList.add("flash");
-
-  // Vibrate pattern
-  if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 400]);
-}
-
-function drawScanProgressRing(ctx, guide) {
-  if (!scanSession.active || scanSession.locked) return;
-
-  const elapsed = (Date.now() - scanSession.startTime) / 1000;
-  const progress = Math.min(1, elapsed / 15);
-
-  const cx = guide.x + guide.w - 30;
-  const cy = guide.y + 30;
-  const r = 20;
-
-  // Background ring
-  ctx.strokeStyle = "rgba(255,255,255,0.2)";
-  ctx.lineWidth = 4;
-  ctx.beginPath();
-  ctx.arc(cx, cy, r, 0, Math.PI * 2);
-  ctx.stroke();
-
-  // Progress ring
-  const g = lastGrade ? lastGrade.psaGrade.grade : 5;
-  const color = g >= 9 ? "#00e676" : g >= 7 ? "#FFD700" : "#FF5252";
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 4;
-  ctx.lineCap = "round";
-  ctx.beginPath();
-  ctx.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + progress * Math.PI * 2);
-  ctx.stroke();
-  ctx.lineCap = "butt";
-
-  // Seconds remaining
-  const remaining = Math.max(0, Math.ceil(15 - elapsed));
-  ctx.fillStyle = "#fff";
-  ctx.font = "bold 12px monospace";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(remaining + "s", cx, cy);
-}
-
-// ── Draw Guide ───────────────────────────────────────────────────
-function drawGuide(guide, grade) {
+// ── Draw Card Overlay ────────────────────────────────────────────
+function drawCardOverlay(bounds, grade) {
   const ctx = overlayCtx;
-  const { x, y, w, h } = guide;
+  const { x, y, w, h, detected } = bounds;
 
-  // Dim outside guide
-  ctx.fillStyle = "rgba(0,0,0,0.45)";
-  ctx.fillRect(0, 0, overlay.width, y);
-  ctx.fillRect(0, y + h, overlay.width, overlay.height - y - h);
-  ctx.fillRect(0, y, x, h);
-  ctx.fillRect(x + w, y, overlay.width - x - w, h);
+  if (!grade) return;
 
-  if (!grade) {
-    // Dashed guide frame
-    ctx.strokeStyle = "rgba(255,255,255,0.8)";
-    ctx.lineWidth = 3;
-    ctx.setLineDash([15, 10]);
-    ctx.strokeRect(x, y, w, h);
-    ctx.setLineDash([]);
-
-    // Corner brackets
-    const bs = 30;
-    ctx.strokeStyle = "#fff";
-    ctx.lineWidth = 4;
-    [[x,y],[x+w,y],[x,y+h],[x+w,y+h]].forEach(([cx,cy]) => {
-      const sx = cx === x ? 1 : -1;
-      const sy = cy === y ? 1 : -1;
-      ctx.beginPath();
-      ctx.moveTo(cx + sx*bs, cy);
-      ctx.lineTo(cx, cy);
-      ctx.lineTo(cx, cy + sy*bs);
-      ctx.stroke();
-    });
-    return;
-  }
-
-  // Grade-based color
   const g = grade.psaGrade.grade;
   const color = g >= 9 ? "#00e676" : g >= 7 ? "#FFD700" : "#FF5252";
 
-  // Solid guide border
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 4;
-  ctx.setLineDash([]);
-  ctx.strokeRect(x, y, w, h);
+  // If auto-detected, draw a subtle thin dashed border
+  if (detected) {
+    ctx.strokeStyle = color + "88";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([8, 6]);
+    ctx.strokeRect(x, y, w, h);
+    ctx.setLineDash([]);
+  }
 
-  // Centering rulers
-  const lr = grade.centering.lrRatio / 100;
-  const tb = grade.centering.tbRatio / 100;
-  const cColor = grade.centering.score >= 9 ? "#00e676" : grade.centering.score >= 8 ? "#FFD700" : "#FF5252";
-
-  // Horizontal center line (top/bottom balance indicator)
-  ctx.strokeStyle = cColor;
-  ctx.lineWidth = 1.5;
-  ctx.setLineDash([5, 5]);
-  ctx.beginPath(); ctx.moveTo(x + 10, y + h * tb); ctx.lineTo(x + w - 10, y + h * tb); ctx.stroke();
-  ctx.setLineDash([]);
-
-  // Vertical center line (left/right balance indicator)
-  ctx.beginPath(); ctx.moveTo(x + w * lr, y + 10); ctx.lineTo(x + w * lr, y + h - 10); ctx.stroke();
-  ctx.setLineDash([]);
-
-  // Corner dots
+  // Corner score dots at each corner
   const corners = [
-    [x + 12, y + 12, grade.corners.tl],
-    [x + w - 12, y + 12, grade.corners.tr],
-    [x + 12, y + h - 12, grade.corners.bl],
-    [x + w - 12, y + h - 12, grade.corners.br]
+    [x + 14, y + 14, grade.corners.tl],
+    [x + w - 14, y + 14, grade.corners.tr],
+    [x + 14, y + h - 14, grade.corners.bl],
+    [x + w - 14, y + h - 14, grade.corners.br]
   ];
   corners.forEach(([cx, cy, score]) => {
     const col = score >= 9 ? "#00e676" : score >= 7 ? "#FFD700" : "#FF5252";
-    ctx.fillStyle = col;
-    ctx.beginPath();
-    ctx.arc(cx, cy, 8, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.fillStyle = col + "cc";
+    ctx.beginPath(); ctx.arc(cx, cy, 9, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = "#000";
-    ctx.font = "bold 8px sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
+    ctx.font = "bold 9px sans-serif";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillText(score.toFixed(0), cx, cy);
   });
 
-  // Centering measurement overlay
-  drawCenteringOverlay(ctx, guide, grade.centering);
+  // Centering measurement arrows inside card
+  drawCenteringOverlay(ctx, bounds, grade.centering);
 }
 
 // ── Centering Overlay ────────────────────────────────────────────
-function drawCenteringOverlay(ctx, guide, centering) {
-  const { x, y, w, h } = guide;
+function drawCenteringOverlay(ctx, bounds, centering) {
+  const { x, y, w, h } = bounds;
   const { leftPx, rightPx, topPx, botPx } = centering;
 
-  // Scale pixel measurements from analysis space (350px wide) to guide display space
+  // Scale pixel measurements from analysis space to display space
   const scaleX = w / 350;
   const scaleY = h / 490;
 
@@ -728,21 +513,21 @@ function drawCenteringOverlay(ctx, guide, centering) {
   const tPx = Math.round(topPx * scaleY);
   const bPx = Math.round(botPx * scaleY);
 
-  // ── Left border arrow: from card left edge RIGHTWARD to image start ──
+  // Left border arrow
   const midY = y + h * 0.35;
   drawMeasArrow(ctx, x + 2, midY, x + lPx, midY, "#00e5ff", lPx + "px");
 
-  // ── Right border arrow: from card right edge LEFTWARD to image start ──
+  // Right border arrow
   drawMeasArrow(ctx, x + w - 2, midY, x + w - rPx, midY, "#00e5ff", rPx + "px");
 
-  // ── Top border arrow: from card top edge DOWNWARD to image start ──
+  // Top border arrow
   const midX = x + w * 0.65;
   drawMeasArrow(ctx, midX, y + 2, midX, y + tPx, "#00e5ff", tPx + "px");
 
-  // ── Bottom border arrow: from card bottom edge UPWARD to image start ──
+  // Bottom border arrow
   drawMeasArrow(ctx, midX, y + h - 2, midX, y + h - bPx, "#00e5ff", bPx + "px");
 
-  // ── Thin lines marking where the image border IS (the detected transition) ──
+  // Thin lines marking where the image border is
   ctx.strokeStyle = "rgba(0, 229, 255, 0.4)";
   ctx.lineWidth = 1;
   ctx.setLineDash([3, 3]);
@@ -752,7 +537,7 @@ function drawCenteringOverlay(ctx, guide, centering) {
   ctx.beginPath(); ctx.moveTo(x + w*0.1, y + h - bPx); ctx.lineTo(x + w*0.9, y + h - bPx); ctx.stroke();
   ctx.setLineDash([]);
 
-  // ── L/R and T/B ratio labels — INSIDE the guide, not outside ──
+  // L/R and T/B ratio labels inside the card
   ctx.font = "bold 13px monospace";
   ctx.textAlign = "center";
 
@@ -783,7 +568,7 @@ function drawMeasArrow(ctx, x1, y1, x2, y2, color, label) {
 
   ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
 
-  // Arrowhead at endpoint (x2,y2)
+  // Arrowhead at endpoint
   const angle = Math.atan2(dy, dx);
   const al = 7;
   ctx.beginPath();
@@ -793,7 +578,7 @@ function drawMeasArrow(ctx, x1, y1, x2, y2, color, label) {
   ctx.closePath();
   ctx.fill();
 
-  // Label at midpoint, offset perpendicularly
+  // Label at midpoint
   if (len > 20) {
     const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
     const perpX = -dy / len * 13, perpY = dx / len * 13;
@@ -805,35 +590,24 @@ function drawMeasArrow(ctx, x1, y1, x2, y2, color, label) {
 
 // ── Update UI ────────────────────────────────────────────────────
 function updateUI(grade) {
-  const { psaGrade, centering, corners, edges, surface, overall } = grade;
-
-  const badge = document.getElementById("grade-badge");
-  badge.classList.remove("hidden");
+  const { psaGrade, centering, corners, edges, surface } = grade;
 
   const g = psaGrade.grade;
   document.getElementById("grade-number").textContent = g;
   document.getElementById("grade-label").textContent = psaGrade.label;
-  document.getElementById("sc-overall").textContent = "PSA ~" + g + " \u00b7 " + psaGrade.label;
 
-  badge.className = "";
-  if (g >= 10) badge.classList.add("grade-10");
-  else if (g >= 9) badge.classList.add("grade-9");
-  else if (g >= 8) badge.classList.add("grade-8");
-  else if (g >= 7) badge.classList.add("grade-7");
-  else badge.classList.add("grade-low");
-
-  // Re-add flash if locked
-  if (scanSession.locked) badge.classList.add("flash");
+  const panel = document.getElementById("panel");
+  panel.className = panel.classList.contains("collapsed") ? "collapsed" : "";
+  if (g >= 10) panel.classList.add("grade-10");
+  else if (g >= 9) panel.classList.add("grade-9");
+  else if (g >= 8) panel.classList.add("grade-8");
+  else if (g >= 7) panel.classList.add("grade-7");
+  else panel.classList.add("grade-low");
 
   document.getElementById("sc-centering").textContent = centering.score.toFixed(1) + "/10 \u00b7 " + centering.label;
   document.getElementById("sc-corners").textContent = corners.score.toFixed(1) + "/10 (TL:" + corners.tl.toFixed(0) + " TR:" + corners.tr.toFixed(0) + " BL:" + corners.bl.toFixed(0) + " BR:" + corners.br.toFixed(0) + ")";
   document.getElementById("sc-edges").textContent = edges.score.toFixed(1) + "/10 (T:" + edges.top.toFixed(0) + " B:" + edges.bot.toFixed(0) + " L:" + edges.left.toFixed(0) + " R:" + edges.right.toFixed(0) + ")";
   document.getElementById("sc-surface").textContent = surface.score.toFixed(1) + "/10 \u00b7 " + surface.label;
-
-  // Reading count if accumulating
-  if (grade.accumulated && grade.readingCount) {
-    document.getElementById("sc-surface").textContent += " (" + grade.readingCount + " readings)";
-  }
 
   // PSA 10 checklist
   const lrPct = Math.round(Math.max(centering.lrRatio, 100 - centering.lrRatio));
@@ -843,14 +617,10 @@ function updateUI(grade) {
   setCheck("chk-edges", edges.score >= 9, "Edges 9+ (" + edges.score.toFixed(1) + ")");
   setCheck("chk-surface", surface.score >= 9, "Surface 9+ (" + surface.score.toFixed(1) + ")");
 
-  if (!scanSession.active) {
-    document.getElementById("status").textContent = g >= 10 ? "\uD83C\uDFC6 PSA 10 Candidate!" : g >= 9 ? "\u2705 Strong card" : "Hold steady";
-  } else if (!scanSession.locked) {
-    document.getElementById("status").textContent = "SCANNING... PSA ~" + g;
-  }
+  document.getElementById("status").textContent = g >= 10 ? "\uD83C\uDFC6 PSA 10 Candidate!" : g >= 9 ? "\u2705 Strong card" : "Hold steady";
 
   // Haptic on PSA 10
-  if (g >= 10 && !scanSession.active && navigator.vibrate) navigator.vibrate([100, 50, 100]);
+  if (g >= 10 && navigator.vibrate) navigator.vibrate([100, 50, 100]);
 }
 
 function setCheck(id, pass, text) {
@@ -862,60 +632,6 @@ function setCheck(id, pass, text) {
 // ── Panel Toggle ────────────────────────────────────────────────
 document.getElementById("panel-toggle").addEventListener("click", () => {
   document.getElementById("panel").classList.toggle("collapsed");
-});
-
-// ── Scan Button ──────────────────────────────────────────────────
-document.getElementById("scan-btn").addEventListener("click", () => {
-  if (!scanSession.active) {
-    startScan();
-  } else {
-    resetScan();
-  }
-});
-
-// ── Capture ──────────────────────────────────────────────────────
-document.getElementById("capture-btn").addEventListener("click", () => {
-  if (!lastGrade) return;
-  const guide = getGuideRect();
-  const mc = document.getElementById("modal-canvas");
-  mc.width = guide.w;
-  mc.height = guide.h;
-  const mCtx = mc.getContext("2d");
-  mCtx.drawImage(captureCanvas, guide.x, guide.y, guide.w, guide.h, 0, 0, guide.w, guide.h);
-
-  const g = lastGrade;
-  const accLabel = g.accumulated ? " (" + g.readingCount + " readings)" : "";
-  document.getElementById("modal-detail").innerHTML =
-    '<div class="modal-grade">PSA ~' + g.psaGrade.grade + ' \u00b7 ' + g.psaGrade.label + accLabel + '</div>' +
-    '<div class="modal-scores">' +
-      '<div>\uD83C\uDFAF Centering: ' + g.centering.score.toFixed(1) + '/10 \u00b7 ' + g.centering.label + '</div>' +
-      '<div>\uD83D\uDCD0 Corners: ' + g.corners.score.toFixed(1) + '/10</div>' +
-      '<div>\uD83D\uDCCF Edges: ' + g.edges.score.toFixed(1) + '/10</div>' +
-      '<div>\u2728 Surface: ' + g.surface.score.toFixed(1) + '/10</div>' +
-    '</div>' +
-    '<div class="checklist">' +
-      '<div class="' + (g.centering.score >= 9 ? "pass" : "fail") + '">' +
-        (g.centering.score >= 9 ? "\u2705" : "\u274C") + ' Centering</div>' +
-      '<div class="' + (g.corners.score >= 9 ? "pass" : "fail") + '">' +
-        (g.corners.score >= 9 ? "\u2705" : "\u274C") + ' Corners</div>' +
-      '<div class="' + (g.edges.score >= 9 ? "pass" : "fail") + '">' +
-        (g.edges.score >= 9 ? "\u2705" : "\u274C") + ' Edges</div>' +
-      '<div class="' + (g.surface.score >= 9 ? "pass" : "fail") + '">' +
-        (g.surface.score >= 9 ? "\u2705" : "\u274C") + ' Surface</div>' +
-    '</div>';
-  document.getElementById("modal").classList.remove("hidden");
-});
-
-document.getElementById("modal-close").addEventListener("click", () => {
-  document.getElementById("modal").classList.add("hidden");
-});
-
-document.getElementById("save-btn").addEventListener("click", () => {
-  const mc = document.getElementById("modal-canvas");
-  const a = document.createElement("a");
-  a.href = mc.toDataURL("image/png");
-  a.download = "psa-grade-" + Date.now() + ".png";
-  a.click();
 });
 
 // ── Boot ─────────────────────────────────────────────────────────
