@@ -272,17 +272,47 @@ html, body {
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border-radius: 16px;
-  padding: 14px 16px;
+  padding: 8px 12px;
   border: 1px solid rgba(255,255,255,0.08);
   box-shadow: 0 -2px 20px rgba(0,0,0,0.4);
+  max-height: 38vh;
+  overflow-y: auto;
+  transition: max-height 0.3s ease;
+}
+
+#panel.collapsed {
+  max-height: 80px;
+  overflow: hidden;
+}
+
+#panel-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: rgba(255,255,255,0.6);
+  font-size: 0.75rem;
+  padding: 2px 0 4px;
+  width: 100%;
+  cursor: pointer;
+}
+
+#panel-toggle .arrow {
+  display: inline-block;
+  transition: transform 0.3s ease;
+}
+
+#panel.collapsed #panel-toggle .arrow {
+  transform: rotate(180deg);
 }
 
 .panel-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 5px 0;
-  font-size: 0.78rem;
+  padding: 4px 0;
+  font-size: 12px;
   border-bottom: 1px solid rgba(255,255,255,0.06);
 }
 
@@ -497,6 +527,20 @@ html, body {
 
 #save-btn:active {
   opacity: 0.8;
+}
+
+/* ── Scrollbar (panel) ──────────────────────────────────────── */
+#panel::-webkit-scrollbar {
+  width: 4px;
+}
+
+#panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#panel::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.15);
+  border-radius: 2px;
 }
 
 /* ── Scrollbar (modal) ───────────────────────────────────────── */

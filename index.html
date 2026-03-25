@@ -43,7 +43,12 @@
     </div>
 
     <!-- Sub-scores panel -->
-    <div id="panel">
+    <div id="panel" class="collapsed">
+      <div class="panel-row" id="panel-overall-row">
+        <span class="label">Overall Grade</span>
+        <span id="sc-overall">--</span>
+      </div>
+      <button id="panel-toggle"><span class="arrow">▲</span> Details</button>
       <div class="panel-row">
         <span class="label">🎯 Centering</span>
         <span id="sc-centering">--</span>

@@ -109,7 +109,7 @@ function loop() {
 // ── Guide Rect ───────────────────────────────────────────────────
 function getGuideRect() {
   const W = overlay.width, H = overlay.height;
-  const h = Math.round(H * 0.78);
+  const h = Math.round(H * 0.52);
   const w = Math.round(h * (2.5 / 3.5));
   const x = Math.round((W - w) / 2);
   const y = Math.round((H - h) / 2);
@@ -255,45 +255,48 @@ function analyzeCentering(pixels, w, h) {
 
 // ── Corners ──────────────────────────────────────────────────────
 function analyzeCorners(pixels, w, h) {
-  const cw = Math.round(w * 0.12), ch = Math.round(h * 0.09);
+  // Small region at each corner tip — check for whitening (worn corners)
+  const cw = Math.round(w * 0.07);
+  const ch = Math.round(h * 0.05);
 
-  function cornerScore(px, py, flipX, flipY) {
-    let edgeSum = 0, brightCount = 0, n = 0;
-    const startX = flipX ? w - cw : 0;
-    const startY = flipY ? h - ch : 0;
+  function singleCorner(startX, startY) {
+    let whiteCount = 0, totalPixels = 0;
 
     for (let dy = 0; dy < ch; dy++) {
       for (let dx = 0; dx < cw; dx++) {
-        const x = startX + dx, y = startY + dy;
-        const s = sobelAt(pixels, w, h, x, y);
-        edgeSum += s;
+        const x = startX + dx;
+        const y = startY + dy;
+        if (x < 0 || x >= w || y < 0 || y >= h) continue;
         const i = (y * w + x) * 4;
-        if (pixels[i] > 220 && pixels[i+1] > 220 && pixels[i+2] > 220) brightCount++;
-        n++;
+        const r = pixels[i], g = pixels[i+1], b = pixels[i+2];
+        const isWhite = r > 200 && g > 200 && b > 200 && Math.max(r,g,b) - Math.min(r,g,b) < 40;
+        if (isWhite) whiteCount++;
+        totalPixels++;
       }
     }
 
-    const avgEdge = edgeSum / n;
-    const whitePct = brightCount / n;
-
-    const whiteScore = Math.max(0, 10 - whitePct * 100);
-    const edgeScore = Math.max(0, 10 - avgEdge / 8);
-
-    return Math.round((whiteScore * 0.6 + edgeScore * 0.4) * 10) / 10;
+    if (totalPixels === 0) return 9;
+    const whitePct = whiteCount / totalPixels;
+    const score = Math.max(1, 10 - whitePct * 25);
+    return Math.round(score * 10) / 10;
   }
 
-  const tl = cornerScore(0, 0, false, false);
-  const tr = cornerScore(w - cw, 0, true, false);
-  const bl = cornerScore(0, h - ch, false, true);
-  const br = cornerScore(w - cw, h - ch, true, true);
-  const score = Math.min(tl, tr, bl, br);
+  const tl = singleCorner(0, 0);
+  const tr = singleCorner(w - cw, 0);
+  const bl = singleCorner(0, h - ch);
+  const br = singleCorner(w - cw, h - ch);
+
+  const all = [tl, tr, bl, br];
+  const minScore = Math.min(...all);
+  const avgScore = all.reduce((a,b)=>a+b,0) / 4;
+  const score = minScore * 0.5 + avgScore * 0.5;
 
   return { score: Math.max(1, Math.min(10, score)), tl, tr, bl, br };
 }
 
 // ── Edges ────────────────────────────────────────────────────────
 function analyzeEdges(pixels, w, h) {
-  const edgeDepth = Math.round(Math.min(w, h) * 0.04);
+  const edgeDepth = Math.round(Math.min(w, h) * 0.025);
 
   function edgeScore(horizontal, start, end, fixedCoord) {
     let brightCount = 0, sobelSum = 0, n = 0;
@@ -311,8 +314,8 @@ function analyzeEdges(pixels, w, h) {
     if (n === 0) return 10;
     const whitePct = brightCount / n;
     const avgSobel = sobelSum / n;
-    const ws = Math.max(0, 10 - whitePct * 80);
-    const ss = Math.max(0, 10 - avgSobel / 8);
+    const ws = Math.max(0, 10 - whitePct * 100);
+    const ss = Math.max(0, 10 - avgSobel / 12);
     return Math.round((ws * 0.65 + ss * 0.35) * 10) / 10;
   }
 
@@ -328,25 +331,38 @@ function analyzeEdges(pixels, w, h) {
 
 // ── Surface ──────────────────────────────────────────────────────
 function analyzeSurface(pixels, w, h) {
-  const mx = Math.round(w * 0.15), my = Math.round(h * 0.15);
-  let highFreqCount = 0, totalSamples = 0;
-  const SCRATCH_THRESHOLD = 80;
+  // Local variance approach — Sobel picks up card texture/print as scratches.
+  // True scratches = bright linear anomalies against local background.
+  // Card texture = uniform fine pattern (low local variance).
+  const mx = Math.round(w * 0.12), my = Math.round(h * 0.12);
+  let anomalyCount = 0, totalSamples = 0;
+  const ANOMALY_THRESHOLD = 35;
 
-  for (let y = my; y < h - my; y += 4) {
-    for (let x = mx; x < w - mx; x += 4) {
-      const s = sobelAt(pixels, w, h, x, y);
-      if (s > SCRATCH_THRESHOLD) highFreqCount++;
+  for (let y = my + 2; y < h - my - 2; y += 6) {
+    for (let x = mx + 2; x < w - mx - 2; x += 6) {
+      let localSum = 0, localCount = 0;
+      for (let dy = -2; dy <= 2; dy++) {
+        for (let dx = -2; dx <= 2; dx++) {
+          localSum += getGray(pixels, w, x + dx, y + dy);
+          localCount++;
+        }
+      }
+      const localMean = localSum / localCount;
+      const centerGray = getGray(pixels, w, x, y);
+      const deviation = Math.abs(centerGray - localMean);
+
+      if (deviation > ANOMALY_THRESHOLD) anomalyCount++;
       totalSamples++;
     }
   }
 
-  const defectRate = highFreqCount / totalSamples;
-  const score = Math.max(1, 10 - defectRate * 120);
+  const anomalyRate = anomalyCount / totalSamples;
+  const score = Math.max(1, Math.min(10, 10 - anomalyRate * 150));
 
   let label = "No issues";
-  if (score < 5) label = "Severe";
-  else if (score < 7) label = "Moderate";
-  else if (score < 9) label = "Minor";
+  if (score < 4) label = "Severe";
+  else if (score < 6) label = "Moderate";
+  else if (score < 8) label = "Minor";
 
   return { score: Math.round(score * 10) / 10, label };
 }
@@ -771,6 +787,7 @@ function updateUI(grade) {
   const g = psaGrade.grade;
   document.getElementById("grade-number").textContent = g;
   document.getElementById("grade-label").textContent = psaGrade.label;
+  document.getElementById("sc-overall").textContent = "PSA ~" + g + " \u00b7 " + psaGrade.label;
 
   badge.className = "";
   if (g >= 10) badge.classList.add("grade-10");
@@ -815,6 +832,11 @@ function setCheck(id, pass, text) {
   el.textContent = (pass ? "\u2705 " : "\u274C ") + text;
   el.className = "check-item " + (pass ? "pass" : "fail");
 }
+
+// ── Panel Toggle ────────────────────────────────────────────────
+document.getElementById("panel-toggle").addEventListener("click", () => {
+  document.getElementById("panel").classList.toggle("collapsed");
+});
 
 // ── Scan Button ──────────────────────────────────────────────────
 document.getElementById("scan-btn").addEventListener("click", () => {
