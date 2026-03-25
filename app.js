@@ -12,6 +12,22 @@ let frameCount = 0, fpsTime = performance.now(), fps = 0;
 const SMOOTH = 8;
 const history = { overall:[], centering:[], corners:[], edges:[], surface:[], lr:[], tb:[] };
 
+// Card bounds smoothing (so outline doesnt jump)
+const boundsHistory = [];
+const BOUNDS_SMOOTH = 6;
+
+function getSmoothedBounds(newBounds) {
+  boundsHistory.push(newBounds);
+  if (boundsHistory.length > BOUNDS_SMOOTH) boundsHistory.shift();
+  return {
+    x: Math.round(boundsHistory.reduce((s,b)=>s+b.x,0)/boundsHistory.length),
+    y: Math.round(boundsHistory.reduce((s,b)=>s+b.y,0)/boundsHistory.length),
+    w: Math.round(boundsHistory.reduce((s,b)=>s+b.w,0)/boundsHistory.length),
+    h: Math.round(boundsHistory.reduce((s,b)=>s+b.h,0)/boundsHistory.length),
+    detected: newBounds.detected
+  };
+}
+
 // ── Start ────────────────────────────────────────────────────────
 async function start() {
   document.getElementById("load-msg").textContent = "Requesting camera...";
@@ -52,7 +68,8 @@ function loop() {
   captureCtx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
   overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
 
-  const bounds = detectCardBounds();
+  const rawBounds = detectCardBounds();
+  const bounds = getSmoothedBounds(rawBounds);
   const imageData = captureCtx.getImageData(bounds.x, bounds.y, bounds.w, bounds.h);
   const pixels = imageData.data;
 
@@ -75,86 +92,97 @@ function loop() {
 // ── Card Detection ──────────────────────────────────────────────
 function detectCardBounds() {
   const W = captureCanvas.width, H = captureCanvas.height;
+
+  // Downsample for speed: work on every 3rd pixel
+  const step = 3;
   const fullData = captureCtx.getImageData(0, 0, W, H);
   const pixels = fullData.data;
 
-  let topEdge = Math.round(H * 0.05);
-  let botEdge = Math.round(H * 0.95);
-  let leftEdge = Math.round(W * 0.05);
-  let rightEdge = Math.round(W * 0.95);
-
-  const midX = Math.round(W / 2);
-
-  // Scan down from top to find where brightness jumps (top of card)
-  let prevBright = getGrayFull(pixels, W, midX, 0);
-  for (let y = 5; y < H * 0.5; y += 3) {
-    const bright = getGrayFull(pixels, W, midX, y);
-    if (Math.abs(bright - prevBright) > 30 || bright > 160) {
-      topEdge = y;
-      break;
+  // Helper: average brightness of a horizontal strip
+  function rowAvgBrightness(y, x0, x1) {
+    let sum = 0, n = 0;
+    for (let x = x0; x < x1; x += step) {
+      const i = (y * W + x) * 4;
+      sum += 0.299*pixels[i] + 0.587*pixels[i+1] + 0.114*pixels[i+2];
+      n++;
     }
-    prevBright = bright;
+    return n ? sum/n : 0;
   }
 
-  // Scan up from bottom
-  prevBright = getGrayFull(pixels, W, midX, H - 1);
-  for (let y = H - 5; y > H * 0.5; y -= 3) {
-    const bright = getGrayFull(pixels, W, midX, y);
-    if (Math.abs(bright - prevBright) > 30 || bright > 160) {
-      botEdge = y;
-      break;
+  // Helper: average brightness of a vertical strip
+  function colAvgBrightness(x, y0, y1) {
+    let sum = 0, n = 0;
+    for (let y = y0; y < y1; y += step) {
+      const i = (y * W + x) * 4;
+      sum += 0.299*pixels[i] + 0.587*pixels[i+1] + 0.114*pixels[i+2];
+      n++;
     }
-    prevBright = bright;
+    return n ? sum/n : 0;
+  }
+
+  // Use center third of the image to find card boundaries
+  const cx0 = Math.round(W * 0.33), cx1 = Math.round(W * 0.67);
+  const cy0 = Math.round(H * 0.33), cy1 = Math.round(H * 0.67);
+
+  // Find max brightness in center band — this is our "card brightness" reference
+  let maxBright = 0;
+  for (let y = cy0; y < cy1; y += step*2) {
+    const b = rowAvgBrightness(y, cx0, cx1);
+    if (b > maxBright) maxBright = b;
+  }
+
+  // Card detection threshold: 55% of max brightness in center
+  const threshold = Math.max(80, maxBright * 0.55);
+
+  // Find top edge: scan down from top, find first bright row
+  let topEdge = Math.round(H * 0.03);
+  for (let y = Math.round(H*0.03); y < H*0.60; y += step) {
+    if (rowAvgBrightness(y, cx0, cx1) >= threshold) { topEdge = y; break; }
+  }
+
+  // Find bottom edge: scan up from bottom
+  let botEdge = Math.round(H * 0.97);
+  for (let y = Math.round(H*0.97); y > H*0.40; y -= step) {
+    if (rowAvgBrightness(y, cx0, cx1) >= threshold) { botEdge = y; break; }
   }
 
   const midY = Math.round((topEdge + botEdge) / 2);
 
-  // Scan right from left
-  prevBright = getGrayFull(pixels, W, 0, midY);
-  for (let x = 5; x < W * 0.5; x += 3) {
-    const bright = getGrayFull(pixels, W, x, midY);
-    if (Math.abs(bright - prevBright) > 30 || bright > 160) {
-      leftEdge = x;
-      break;
-    }
-    prevBright = bright;
+  // Find left edge: scan right from left
+  let leftEdge = Math.round(W * 0.03);
+  for (let x = Math.round(W*0.03); x < W*0.60; x += step) {
+    if (colAvgBrightness(x, topEdge, botEdge) >= threshold) { leftEdge = x; break; }
   }
 
-  // Scan left from right
-  prevBright = getGrayFull(pixels, W, W - 1, midY);
-  for (let x = W - 5; x > W * 0.5; x -= 3) {
-    const bright = getGrayFull(pixels, W, x, midY);
-    if (Math.abs(bright - prevBright) > 30 || bright > 160) {
-      rightEdge = x;
-      break;
-    }
-    prevBright = bright;
+  // Find right edge: scan left from right
+  let rightEdge = Math.round(W * 0.97);
+  for (let x = Math.round(W*0.97); x > W*0.40; x -= step) {
+    if (colAvgBrightness(x, topEdge, botEdge) >= threshold) { rightEdge = x; break; }
   }
+
+  // Add small padding (card edge is where brightness starts, back off a couple px)
+  topEdge = Math.max(0, topEdge - 4);
+  botEdge = Math.min(H - 1, botEdge + 4);
+  leftEdge = Math.max(0, leftEdge - 4);
+  rightEdge = Math.min(W - 1, rightEdge + 4);
 
   const cardW = rightEdge - leftEdge;
   const cardH = botEdge - topEdge;
   const aspect = cardH / cardW;
+  const minDim = Math.min(W, H) * 0.18;
 
-  // Validate: card should have roughly 1.4 aspect ratio and be a reasonable size
-  const minSize = Math.min(W, H) * 0.20;
-  if (cardW < minSize || cardH < minSize || aspect < 0.8 || aspect > 2.5) {
-    // Fallback: use center 70% of frame
-    const fw = Math.round(W * 0.70);
+  // Validate bounds — must be card-ish size and aspect ratio
+  if (cardW < minDim || cardH < minDim || aspect < 0.7 || aspect > 2.8) {
+    // No card found — return a centered region as fallback
+    const fw = Math.round(W * 0.65);
     const fh = Math.round(fw * 1.4);
     return {
-      x: Math.round((W - fw) / 2),
-      y: Math.round((H - fh) / 2),
-      w: fw, h: fh,
-      detected: false
+      x: Math.round((W - fw)/2), y: Math.round((H - fh)/2),
+      w: fw, h: fh, detected: false
     };
   }
 
   return { x: leftEdge, y: topEdge, w: cardW, h: cardH, detected: true };
-}
-
-function getGrayFull(pixels, W, x, y) {
-  const i = (y * W + x) * 4;
-  return 0.299 * pixels[i] + 0.587 * pixels[i+1] + 0.114 * pixels[i+2];
 }
 
 // ── Pixel helpers ────────────────────────────────────────────────
@@ -464,38 +492,52 @@ function drawCardOverlay(bounds, grade) {
   const ctx = overlayCtx;
   const { x, y, w, h, detected } = bounds;
 
-  if (!grade) return;
-
-  const g = grade.psaGrade.grade;
-  const color = g >= 9 ? "#00e676" : g >= 7 ? "#FFD700" : "#FF5252";
-
-  // If auto-detected, draw a subtle thin dashed border
-  if (detected) {
-    ctx.strokeStyle = color + "88";
-    ctx.lineWidth = 2;
-    ctx.setLineDash([8, 6]);
-    ctx.strokeRect(x, y, w, h);
+  if (!grade) {
+    // No grade yet but draw tracking outline
+    ctx.strokeStyle = "#FF1744";
+    ctx.lineWidth = 3;
     ctx.setLineDash([]);
+    ctx.strokeRect(x, y, w, h);
+    return;
   }
 
-  // Corner score dots at each corner
-  const corners = [
-    [x + 14, y + 14, grade.corners.tl],
-    [x + w - 14, y + 14, grade.corners.tr],
-    [x + 14, y + h - 14, grade.corners.bl],
-    [x + w - 14, y + h - 14, grade.corners.br]
+  // Always draw solid RED outline tracking the card
+  ctx.strokeStyle = "#FF1744";
+  ctx.lineWidth = 3;
+  ctx.setLineDash([]);
+  ctx.strokeRect(x, y, w, h);
+
+  // Corner L-brackets in red (heavier corners for emphasis)
+  const blen = Math.round(Math.min(w, h) * 0.12);
+  ctx.lineWidth = 5;
+  ctx.strokeStyle = "#FF1744";
+  [[x,y,1,1],[x+w,y,-1,1],[x,y+h,1,-1],[x+w,y+h,-1,-1]].forEach(([cx,cy,sx,sy]) => {
+    ctx.beginPath();
+    ctx.moveTo(cx + sx*blen, cy);
+    ctx.lineTo(cx, cy);
+    ctx.lineTo(cx, cy + sy*blen);
+    ctx.stroke();
+  });
+
+  // Corner score dots (small, inside corners)
+  ctx.lineWidth = 1;
+  const cDots = [
+    [x + 18, y + 18, grade.corners.tl],
+    [x + w - 18, y + 18, grade.corners.tr],
+    [x + 18, y + h - 18, grade.corners.bl],
+    [x + w - 18, y + h - 18, grade.corners.br]
   ];
-  corners.forEach(([cx, cy, score]) => {
+  cDots.forEach(([cx, cy, score]) => {
     const col = score >= 9 ? "#00e676" : score >= 7 ? "#FFD700" : "#FF5252";
-    ctx.fillStyle = col + "cc";
-    ctx.beginPath(); ctx.arc(cx, cy, 9, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.arc(cx, cy, 9, 0, Math.PI*2); ctx.fill();
     ctx.fillStyle = "#000";
     ctx.font = "bold 9px sans-serif";
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillText(score.toFixed(0), cx, cy);
   });
 
-  // Centering measurement arrows inside card
+  // Centering arrows inside the card
   drawCenteringOverlay(ctx, bounds, grade.centering);
 }
 
